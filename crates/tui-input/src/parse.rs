@@ -97,8 +97,10 @@ fn parse_bracket_token(token: &str) -> Result<KeyToken, String> {
         "space" | "spc" => Ok(KeyToken::Space),
         // Function keys
         f if f.starts_with("f") && f.len() > 1 => {
-            let num: u8 = f[1..].parse().map_err(|_| format!("Unknown key token: <{}>", token))?;
-            if num < 1 || num > 24 {
+            let num: u8 = f[1..]
+                .parse()
+                .map_err(|_| format!("Unknown key token: <{}>", token))?;
+            if !(1..=24).contains(&num) {
                 return Err(format!("F key must be 1-24: <{}>", token));
             }
             Ok(KeyToken::F(num))

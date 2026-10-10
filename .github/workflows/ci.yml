@@ -1,0 +1,22 @@
+name: Rust and PostgreSQL workflow
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Format, unit tests, lint, and seeded database integration
+        run: ./scripts/check.sh --postgres
+      - name: Database logs on failure
+        if: failure()
+        run: docker compose logs postgres
+      - name: Stop test services
+        if: always()
+        run: docker compose down

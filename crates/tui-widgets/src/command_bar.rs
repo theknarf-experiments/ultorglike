@@ -2,11 +2,11 @@
 //! Shows command input with completion candidates.
 
 use ratatui::{
-    Frame,
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
+    Frame,
 };
 
 /// Draw a command bar at the bottom of the screen.

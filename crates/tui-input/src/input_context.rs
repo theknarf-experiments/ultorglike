@@ -5,10 +5,9 @@ use std::collections::HashMap;
 
 use crossterm::event::{Event, KeyEvent, KeyEventKind};
 
-use crate::{
-    KeyMap, KeyToken, Mode, parse_key_sequence,
-    key_event_to_token,
-};
+use crate::{key_event_to_token, parse_key_sequence, KeyMap, KeyToken, Mode};
+
+type CommandHandler = Box<dyn FnMut(&mut InputState) -> bool + Send>;
 
 /// The input context manages mode, leader key, pending keys,
 /// and resolves key events to commands.
@@ -21,7 +20,7 @@ pub struct InputContext {
     pending: Vec<KeyToken>,
     /// Custom command handlers registered by the application.
     /// Maps command name to a handler function.
-    handlers: HashMap<String, Box<dyn FnOnce(&mut InputState) -> bool + Send>>,
+    handlers: HashMap<String, CommandHandler>,
     /// Input buffer for command mode.
     command_buffer: String,
     /// Command history for up/down navigation.
@@ -48,7 +47,7 @@ impl InputContext {
         Self {
             keymap: KeyMap::new(),
             mode: Mode::Normal,
-            leader: Some(','),  // Default leader key like mbp-info
+            leader: Some(','), // Default leader key like mbp-info
             pending: Vec::new(),
             handlers: HashMap::new(),
             command_buffer: String::new(),
@@ -90,7 +89,7 @@ impl InputContext {
     /// The handler returns true if the app should quit.
     pub fn register_handler<F>(&mut self, command: &str, handler: F)
     where
-        F: FnOnce(&mut InputState) -> bool + Send + 'static,
+        F: FnMut(&mut InputState) -> bool + Send + 'static,
     {
         self.handlers.insert(command.to_string(), Box::new(handler));
     }
@@ -148,7 +147,12 @@ impl InputContext {
         }
 
         // Add to history
-        if !self.command_history.last().map(|h| h == &cmd).unwrap_or(true) {
+        if !self
+            .command_history
+            .last()
+            .map(|h| h == &cmd)
+            .unwrap_or(false)
+        {
             self.command_history.push(cmd.clone());
         }
         self.history_index = None;
@@ -171,6 +175,7 @@ impl InputContext {
                 self.command_history.len() - 1
             }
         };
+        self.history_index = Some(next_index);
         if let Some(cmd) = self.command_history.get(next_index) {
             self.command_buffer = cmd.clone();
         }
@@ -200,7 +205,7 @@ impl InputContext {
         };
 
         // Only handle press events (not repeat)
-        if key.kind != KeyEventKind::Press {
+        if key.kind == KeyEventKind::Release {
             return None;
         }
 
@@ -216,14 +221,26 @@ impl InputContext {
 
         match key.code {
             KeyCode::Enter => {
-                let quit = self.execute_command_internal();
-                if quit {
-                    Some("quit".to_string())
-                } else {
+                let command = self.command_buffer.trim().to_string();
+                if !command.is_empty() && self.command_history.last() != Some(&command) {
+                    self.command_history.push(command.clone());
+                }
+                self.exit_command_mode();
+                if command.is_empty() {
                     None
+                } else {
+                    Some(command)
                 }
             }
-            KeyCode::Esc | KeyCode::Char('c') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+            KeyCode::Esc => {
+                self.exit_command_mode();
+                None
+            }
+            KeyCode::Char('c')
+                if key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+            {
                 self.exit_command_mode();
                 None
             }
@@ -278,6 +295,10 @@ impl InputContext {
             if !self.has_pending_longer(&attempted) {
                 let command = cmd.name().to_string();
                 self.pending.clear();
+                if command == "enter_command_mode" {
+                    self.enter_command_mode();
+                    return None;
+                }
                 return Some(command);
             }
         }
@@ -288,12 +309,21 @@ impl InputContext {
             return None;
         }
 
-        // No match - clear pending and try single token
+        // Retry a single key, but never execute an incomplete mapping.
         self.pending.clear();
-        if let Some(cmd) = self.keymap.get(&self.mode, &[token]) {
-            Some(cmd.name().to_string())
-        } else {
+        if self.has_pending_longer(std::slice::from_ref(&token)) {
+            self.pending.push(token);
+            return None;
+        }
+        let command = self
+            .keymap
+            .get(&self.mode, &[token])
+            .map(|c| c.name().to_string());
+        if command.as_deref() == Some("enter_command_mode") {
+            self.enter_command_mode();
             None
+        } else {
+            command
         }
     }
 
@@ -303,7 +333,8 @@ impl InputContext {
             .mappings_for_mode(&self.mode)
             .iter()
             .any(|(seq, _)| {
-                seq.len() > tokens.len() && is_sequence_prefix(tokens, &seq_to_tokens(seq))
+                let sequence = seq_to_tokens(seq);
+                sequence.len() > tokens.len() && is_sequence_prefix(tokens, &sequence)
             })
     }
 
@@ -318,7 +349,7 @@ impl InputContext {
     /// Execute a command by name.
     fn run_command(&mut self, command: &str) -> bool {
         let canonical = self.canonicalize_command(command);
-        let Some(handler) = self.handlers.remove(canonical.as_str()) else {
+        let Some(handler) = self.handlers.get_mut(canonical.as_str()) else {
             // Check if it's a built-in mappable command
             if self.is_mappable_command(&canonical) {
                 return self.execute_mappable_command(&canonical);
@@ -396,13 +427,24 @@ impl InputContext {
     fn is_mappable_command(&self, command: &str) -> bool {
         matches!(
             command,
-            "quit" | "help" | "cursor_up" | "cursor_down"
-                | "pan_up" | "pan_down" | "pan_left" | "pan_right"
-                | "jump_to_first_row" | "jump_to_last_row"
-                | "jump_top" | "jump_bottom"
-                | "zoom_in" | "zoom_out"
+            "quit"
+                | "help"
+                | "cursor_up"
+                | "cursor_down"
+                | "pan_up"
+                | "pan_down"
+                | "pan_left"
+                | "pan_right"
+                | "jump_to_first_row"
+                | "jump_to_last_row"
+                | "jump_top"
+                | "jump_bottom"
+                | "zoom_in"
+                | "zoom_out"
                 | "center_viewport"
-                | "enter_visual_mode" | "enter_insert_mode" | "enter_normal_mode"
+                | "enter_visual_mode"
+                | "enter_insert_mode"
+                | "enter_normal_mode"
                 | "enter_command_mode"
         )
     }
@@ -422,26 +464,19 @@ impl InputContext {
         }
 
         if matches.len() == 1 {
-            self.command_buffer = format!("{}{}", partial, matches[0].strip_prefix(&partial).unwrap_or(&matches[0]));
-        } else if partial.is_empty() {
-            // Show candidates as status (app can read these)
-            self.command_buffer = matches.join(" ");
+            self.command_buffer = format!(
+                "{}{}",
+                partial,
+                matches[0].strip_prefix(&partial).unwrap_or(&matches[0])
+            );
         } else {
-            // Find common prefix
-            let common: String = matches
-                .iter()
-                .fold(None, |acc, s| {
-                    acc.map(|common: String| {
-                        common
-                            .chars()
-                            .zip(s.chars())
-                            .take_while(|(a, b)| a == b)
-                            .map(|(a, _)| a)
-                            .collect()
-                    })
-                    .or_else(|| Some(s[..s.len().min(common_len(&matches))].to_string()))
-                })
-                .unwrap_or_default();
+            let first = &matches[0];
+            let common: String = first
+                .chars()
+                .enumerate()
+                .take_while(|(i, ch)| matches.iter().all(|s| s.chars().nth(*i) == Some(*ch)))
+                .map(|(_, ch)| ch)
+                .collect();
             if common.len() > partial.len() {
                 self.command_buffer = common;
             }
@@ -456,7 +491,11 @@ impl InputContext {
 
         let mut rows = Vec::with_capacity(entries.len() + 1);
         rows.push(vec!["Keys".to_string(), "Command".to_string()]);
-        rows.extend(entries.into_iter().map(|(seq, cmd)| vec![seq, cmd.name().to_string()]));
+        rows.extend(
+            entries
+                .into_iter()
+                .map(|(seq, cmd)| vec![seq, cmd.name().to_string()]),
+        );
         rows
     }
 }
@@ -477,27 +516,14 @@ fn is_sequence_prefix(short: &[KeyToken], long: &[KeyToken]) -> bool {
     if long.len() < short.len() {
         return false;
     }
-    long[..short.len()].iter().zip(short.iter()).all(|(a, b)| a == b)
+    long[..short.len()]
+        .iter()
+        .zip(short.iter())
+        .all(|(a, b)| a == b)
 }
 
 fn seq_to_tokens(seq: &str) -> Vec<KeyToken> {
     parse_key_sequence(seq).unwrap_or_default()
-}
-
-fn common_len(strings: &[String]) -> usize {
-    if strings.is_empty() {
-        return 0;
-    }
-    let first = &strings[0];
-    let chars: Vec<(char, Vec<char>)> = first
-        .chars()
-        .zip(strings.iter().skip(1).map(|s| s.chars().collect::<Vec<_>>()))
-        .collect();
-
-    chars
-        .iter()
-        .take_while(|(c, others)| others.iter().all(|oc| oc == c))
-        .count()
 }
 
 #[cfg(test)]
@@ -508,6 +534,39 @@ mod tests {
     fn test_new_context() {
         let ctx = InputContext::new();
         assert_eq!(ctx.mode_name(), "normal");
+    }
+
+    #[test]
+    fn navigation_keys_resolve_on_every_press() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+
+        let mut ctx = InputContext::new();
+        for (arrow, vim_key, command) in [
+            (KeyCode::Left, 'h', "pan_left"),
+            (KeyCode::Down, 'j', "pan_down"),
+            (KeyCode::Up, 'k', "pan_up"),
+            (KeyCode::Right, 'l', "pan_right"),
+        ] {
+            for code in [arrow, arrow, KeyCode::Char(vim_key)] {
+                let event = Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
+                assert_eq!(ctx.handle_event(&event).as_deref(), Some(command));
+                assert!(ctx.pending.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn compound_navigation_waits_for_completion() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+
+        let mut ctx = InputContext::new();
+        let event = Event::Key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
+        assert_eq!(ctx.handle_event(&event), None);
+        assert_eq!(
+            ctx.handle_event(&event).as_deref(),
+            Some("jump_to_first_row")
+        );
+        assert!(ctx.pending.is_empty());
     }
 
     #[test]
@@ -561,5 +620,40 @@ mod tests {
 
         ctx.history_next();
         assert_eq!(ctx.command_buffer(), "");
+    }
+}
+
+#[cfg(test)]
+mod regression_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyModifiers};
+    #[test]
+    fn registered_handlers_are_reusable() {
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let copy = count.clone();
+        let mut ctx = InputContext::new();
+        ctx.register_handler("repeat", move |_| {
+            copy.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            false
+        });
+        for _ in 0..3 {
+            ctx.enter_command_mode();
+            for c in "repeat".chars() {
+                ctx.push_command_char(c);
+            }
+            ctx.execute_command();
+        }
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+    #[test]
+    fn unmatched_prefix_can_start_another_compound_sequence() {
+        let mut ctx = InputContext::new();
+        let event = |c| Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        assert_eq!(ctx.handle_event(&event('z')), None);
+        assert_eq!(ctx.handle_event(&event('g')), None);
+        assert_eq!(
+            ctx.handle_event(&event('g')),
+            Some("jump_to_first_row".into())
+        );
     }
 }

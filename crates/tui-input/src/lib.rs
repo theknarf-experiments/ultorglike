@@ -25,16 +25,16 @@
 //! }
 //! ```
 
-mod key_token;
 mod input_context;
-mod parse;
+mod key_token;
 mod keymap;
+mod parse;
 
-pub use key_token::KeyToken;
 pub use input_context::{InputContext, KeyEventExt};
-pub use parse::parse_key_sequence;
+pub use key_token::KeyToken;
 pub use keymap::{KeyMap, MappableCommand, Mode};
 pub use parse::key_event_to_token;
+pub use parse::parse_key_sequence;
 
 // Re-export commonly used types from crossterm
-pub use crossterm::event::{KeyEvent, KeyModifiers, KeyCode};
+pub use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};

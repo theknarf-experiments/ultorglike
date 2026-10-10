@@ -2,11 +2,11 @@
 //! Shows keybindings and help text in a modal overlay.
 
 use ratatui::{
-    Frame,
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
+    Frame,
 };
 
 /// Draw a help popup centered on screen.
@@ -66,20 +66,17 @@ pub fn help_popup(
             )));
             for mapping in mappings {
                 if mapping.len() >= 2 {
-                    content_lines.push(Line::from(format!(
-                        "  {:15} {}",
-                        mapping[0],
-                        mapping[1]
-                    )));
+                    content_lines.push(Line::from(format!("  {:15} {}", mapping[0], mapping[1])));
                 }
             }
         }
     }
 
     content_lines.push(Line::from(""));
-    content_lines.push(Line::from(
-        Span::styled("Press any key to close", Style::default().fg(Color::DarkGray)),
-    ));
+    content_lines.push(Line::from(Span::styled(
+        "Press any key to close",
+        Style::default().fg(Color::DarkGray),
+    )));
 
     let widget = Paragraph::new(content_lines)
         .block(block)

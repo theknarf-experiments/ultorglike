@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use crate::{KeyToken, parse_key_sequence};
+use crate::{parse_key_sequence, KeyToken};
 
 /// Predefined mappable commands that can be bound to keys.
 /// These are the "built-in" commands that are always available.
@@ -102,7 +102,7 @@ pub enum Mode {
     Insert,
     Command(String), // The command being typed
     Help,
-    Other(String),   // Custom modes
+    Other(String), // Custom modes
 }
 
 impl Mode {
@@ -136,7 +136,11 @@ impl KeyMap {
         self.bind_tokens(&normal, vec![KeyToken::Char('h')], MappableCommand::PanLeft);
         self.bind_tokens(&normal, vec![KeyToken::Char('j')], MappableCommand::PanDown);
         self.bind_tokens(&normal, vec![KeyToken::Char('k')], MappableCommand::PanUp);
-        self.bind_tokens(&normal, vec![KeyToken::Char('l')], MappableCommand::PanRight);
+        self.bind_tokens(
+            &normal,
+            vec![KeyToken::Char('l')],
+            MappableCommand::PanRight,
+        );
 
         // Arrow keys as alternative
         self.bind_tokens(&normal, vec![KeyToken::Left], MappableCommand::PanLeft);
@@ -145,35 +149,49 @@ impl KeyMap {
         self.bind_tokens(&normal, vec![KeyToken::Right], MappableCommand::PanRight);
 
         // Jump to first/last line - vim gg/G style
-        self.bind_tokens(&normal, vec![KeyToken::Char('g'), KeyToken::Char('g')], MappableCommand::JumpToFirstRow);
-        self.bind_tokens(&normal, vec![KeyToken::Char('G')], MappableCommand::JumpToLastRow);
+        self.bind_tokens(
+            &normal,
+            vec![KeyToken::Char('g'), KeyToken::Char('g')],
+            MappableCommand::JumpToFirstRow,
+        );
+        self.bind_tokens(
+            &normal,
+            vec![KeyToken::Char('G')],
+            MappableCommand::JumpToLastRow,
+        );
 
-        // Zoom
-        self.bind_tokens(&normal, vec![KeyToken::Char('+')], MappableCommand::ZoomIn);
-        self.bind_tokens(&normal, vec![KeyToken::Char('=')], MappableCommand::ZoomIn);
-        self.bind_tokens(&normal, vec![KeyToken::Char('-')], MappableCommand::ZoomOut);
-
-        // Center view
-        self.bind_tokens(&normal, vec![KeyToken::Char('c')], MappableCommand::CenterViewport);
-
-        // Mode switching
-        self.bind_tokens(&normal, vec![KeyToken::Char('v')], MappableCommand::EnterVisualMode);
-        self.bind_tokens(&normal, vec![KeyToken::Char('i')], MappableCommand::EnterInsertMode);
-        self.bind_tokens(&normal, vec![KeyToken::Char(':')], MappableCommand::EnterCommandMode);
-
-        // Quit
-        self.bind_tokens(&normal, vec![KeyToken::Ctrl('c')], MappableCommand::Quit);
-        self.bind_tokens(&normal, vec![KeyToken::Char('q')], MappableCommand::Quit);
-
-        // Help
-        self.bind_tokens(&normal, vec![KeyToken::Char('h')], MappableCommand::Help);
-
-        // Page navigation
-        self.bind_tokens(&normal, vec![KeyToken::Char('d')], MappableCommand::PageDown);
-        self.bind_tokens(&normal, vec![KeyToken::Char('u')], MappableCommand::PageUp);
-
-        // Tab
-        self.bind_tokens(&normal, vec![KeyToken::Tab], MappableCommand::EnterCommandMode);
+        for (sequence, action) in [
+            (":", "enter_command_mode"),
+            ("q", "quit"),
+            ("<C-c>", "quit"),
+            ("?", "help"),
+            ("H", "help"),
+            ("<Esc>", "escape"),
+            ("<C-d>", "page_down"),
+            ("<C-u>", "page_up"),
+            ("<Enter>", "expand"),
+            ("zo", "expand"),
+            ("zc", "collapse"),
+            ("za", "toggle_relation"),
+            ("/", "search"),
+            ("n", "search_next"),
+            ("N", "search_previous"),
+            ("F", "filter_prompt"),
+            ("f", "fields"),
+            ("t", "tables"),
+            ("s", "sort"),
+            ("S", "sort_desc"),
+            ("x", "hide"),
+            ("u", "undo"),
+            ("<C-r>", "redo"),
+            ("gt", "next_view"),
+            ("gT", "previous_view"),
+            ("0", "first_column"),
+            ("$", "last_column"),
+        ] {
+            self.bind(&normal, sequence, MappableCommand::Custom(action.into()))
+                .expect("valid default binding");
+        }
     }
 
     /// Bind a single character key in a mode (convenience wrapper).
@@ -200,7 +218,12 @@ impl KeyMap {
     }
 
     /// Bind a string command (custom handler).
-    pub fn bind(&mut self, mode: &Mode, sequence: &str, command: MappableCommand) -> Result<(), String> {
+    pub fn bind(
+        &mut self,
+        mode: &Mode,
+        sequence: &str,
+        command: MappableCommand,
+    ) -> Result<(), String> {
         let tokens = parse_key_sequence(sequence)?;
         self.bind_tokens(mode, tokens, command);
         Ok(())
@@ -211,7 +234,11 @@ impl KeyMap {
         let tokens = parse_key_sequence(sequence)?;
         if let Some(mode_map) = self.mappings.get_mut(mode) {
             if mode_map.remove(&tokens).is_none() {
-                return Err(format!("No mapping for '{}' in mode '{}'", sequence, mode.name()));
+                return Err(format!(
+                    "No mapping for '{}' in mode '{}'",
+                    sequence,
+                    mode.name()
+                ));
             }
         }
         Ok(())
@@ -221,15 +248,7 @@ impl KeyMap {
     /// Returns the first (shortest) matching command.
     pub fn get(&self, mode: &Mode, tokens: &[KeyToken]) -> Option<&MappableCommand> {
         let mode_map = self.mappings.get(mode)?;
-        // Try exact match first
-        if let Some(cmd) = mode_map.get(tokens) {
-            return Some(cmd);
-        }
-        // Try partial match (for leader key and compound sequences)
-        mode_map
-            .iter()
-            .find(|(seq, _)| is_prefix(tokens, seq))
-            .map(|(_, cmd)| cmd)
+        mode_map.get(tokens)
     }
 
     /// Get all mappings for a mode.
@@ -267,15 +286,12 @@ impl KeyMap {
     }
 }
 
-fn is_prefix(input: &[KeyToken], seq: &[KeyToken]) -> bool {
-    if seq.len() < input.len() {
-        return false;
-    }
-    seq[..input.len()].iter().zip(input.iter()).all(|(a, b)| a == b)
-}
-
 fn format_tokens(tokens: &[KeyToken]) -> String {
     tokens.iter().map(|t| t.to_string()).collect()
 }
 
-
+impl Default for KeyMap {
+    fn default() -> Self {
+        Self::new()
+    }
+}

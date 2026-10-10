@@ -8,19 +8,19 @@
 //! - `help_popup` - Modal help overlay
 //! - `command_bar` - Command line with input and history
 
-mod status_bar;
-mod help_popup;
 mod command_bar;
+mod help_popup;
+mod status_bar;
 
-pub use status_bar::status_bar;
-pub use help_popup::help_popup;
 pub use command_bar::command_bar;
+pub use help_popup::help_popup;
+pub use status_bar::status_bar;
 
 // Re-export common types
 pub use ratatui::{
-    Frame,
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
+    Frame,
 };

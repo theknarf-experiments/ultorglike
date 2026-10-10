@@ -1,0 +1,126 @@
+{
+  "version": 1,
+  "root": {
+    "id": 1,
+    "table": {
+      "schema": "public",
+      "name": "customers"
+    },
+    "label": "customers",
+    "columns": [
+      "company_name"
+    ],
+    "children": [
+      {
+        "id": 2,
+        "table": {
+          "schema": "public",
+          "name": "orders"
+        },
+        "label": "orders",
+        "columns": [
+          "order_date",
+          "freight",
+          "status"
+        ],
+        "children": [
+          {
+            "id": 3,
+            "table": {
+              "schema": "public",
+              "name": "line_items"
+            },
+            "label": "line_items",
+            "columns": [
+              "quantity",
+              "unit_price",
+              "discount"
+            ],
+            "children": [
+              {
+                "id": 4,
+                "table": {
+                  "schema": "public",
+                  "name": "products"
+                },
+                "label": "products",
+                "columns": [
+                  "name"
+                ],
+                "children": [],
+                "join": {
+                  "constraint": "line_items_product_id_fkey",
+                  "target": {
+                    "schema": "public",
+                    "name": "products"
+                  },
+                  "parent_columns": [
+                    "product_id"
+                  ],
+                  "child_columns": [
+                    "id"
+                  ]
+                },
+                "expanded": true,
+                "require_match": false,
+                "filters": [],
+                "sort": []
+              }
+            ],
+            "join": {
+              "constraint": "line_items_order_id_fkey",
+              "target": {
+                "schema": "public",
+                "name": "line_items"
+              },
+              "parent_columns": [
+                "id"
+              ],
+              "child_columns": [
+                "order_id"
+              ]
+            },
+            "expanded": true,
+            "require_match": false,
+            "filters": [],
+            "sort": []
+          }
+        ],
+        "join": {
+          "constraint": "orders_customer_id_fkey",
+          "target": {
+            "schema": "public",
+            "name": "orders"
+          },
+          "parent_columns": [
+            "id"
+          ],
+          "child_columns": [
+            "customer_id"
+          ]
+        },
+        "expanded": true,
+        "require_match": false,
+        "filters": [],
+        "sort": [
+          {
+            "column": "order_date",
+            "descending": true
+          }
+        ]
+      }
+    ],
+    "join": null,
+    "expanded": true,
+    "require_match": false,
+    "filters": [],
+    "sort": [
+      {
+        "column": "company_name",
+        "descending": false
+      }
+    ]
+  },
+  "limit": 100,
+  "next_id": 5
+}

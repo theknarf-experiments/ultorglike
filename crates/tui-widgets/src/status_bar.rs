@@ -1,7 +1,13 @@
 //! Status bar widget.
 //! Shows the current mode and any status messages.
 
-use ratatui::{Frame, layout::Rect, style::{Color, Modifier, Style}, text::{Line, Span}, widgets::Paragraph};
+use ratatui::{
+    layout::Rect,
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::Paragraph,
+    Frame,
+};
 
 /// Draw a status bar at the given area.
 ///
@@ -22,12 +28,30 @@ pub fn status_bar(
 
     // Mode indicator
     let mode_style = match mode {
-        "normal" => Style::default().fg(Color::Black).bg(Color::Green).add_modifier(Modifier::BOLD),
-        "visual" => Style::default().fg(Color::Black).bg(Color::Magenta).add_modifier(Modifier::BOLD),
-        "insert" => Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD),
-        "command" => Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD),
-        "help" => Style::default().fg(Color::Black).bg(Color::Blue).add_modifier(Modifier::BOLD),
-        _ => Style::default().fg(Color::White).bg(Color::DarkGray).add_modifier(Modifier::BOLD),
+        "normal" => Style::default()
+            .fg(Color::Black)
+            .bg(Color::Green)
+            .add_modifier(Modifier::BOLD),
+        "visual" => Style::default()
+            .fg(Color::Black)
+            .bg(Color::Magenta)
+            .add_modifier(Modifier::BOLD),
+        "insert" => Style::default()
+            .fg(Color::Black)
+            .bg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+        "command" => Style::default()
+            .fg(Color::Black)
+            .bg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+        "help" => Style::default()
+            .fg(Color::Black)
+            .bg(Color::Blue)
+            .add_modifier(Modifier::BOLD),
+        _ => Style::default()
+            .fg(Color::White)
+            .bg(Color::DarkGray)
+            .add_modifier(Modifier::BOLD),
     };
     parts.push(Span::styled(format!("[{}]", mode), mode_style));
 
@@ -52,12 +76,6 @@ pub fn status_bar(
     }
 
     let text = Line::from(parts);
-    let widget = Paragraph::new(text)
-        .style(Style::default().bg(Color::DarkGray).fg(Color::White));
+    let widget = Paragraph::new(text).style(Style::default().bg(Color::DarkGray).fg(Color::White));
     frame.render_widget(widget, area);
-}
-
-/// Draw a mode indicator only (no status or command).
-pub fn mode_indicator(frame: &mut Frame, area: Rect, mode: &str) {
-    status_bar(frame, area, mode, None, None);
 }

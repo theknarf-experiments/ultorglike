@@ -2,14 +2,18 @@
 name = "ultorglike"
 version = "0.1.0"
 edition = "2021"
-description = "A TUI app demonstrating reusable vim-like input handling"
+description = "A Vim-style terminal browser for nested relational data"
 
 [dependencies]
 tui-input = { path = "crates/tui-input" }
 tui-widgets = { path = "crates/tui-widgets" }
+query-engine = { path = "crates/query-engine" }
+data-model = { path = "crates/data-model" }
 ratatui = "0.29"
 crossterm = "0.28"
+serde_json = "1"
+unicode-width = "0.2"
 
 [workspace]
-members = ["crates/tui-input", "crates/tui-widgets", "."]
+members = ["crates/tui-input", "crates/tui-widgets", "crates/query-engine", "crates/data-model", "."]
 resolver = "2"

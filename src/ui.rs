@@ -1,263 +1,357 @@
-//! UI rendering for the application.
-
+use crate::app::App;
 use ratatui::{
-    Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::Rect,
     style::{Color, Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{Block, Borders, Clear, Paragraph},
+    Frame,
 };
+use tui_input::Mode;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::app::{App, FocusPanel};
+pub const HELP:&str="NAVIGATION\nh j k l / arrows: move cells     10j: count     gg / G: first / last\nCtrl-d / Ctrl-u: half page       0 / $: first / last column\n/ search loaded values          n / N: next / previous match\nEnter / zo: expand              zc: collapse     za: toggle\n\nQUERY\nt: tables   f: fields & relationships   s / S: sort asc / desc   F: filter\nx: hide field   u: undo   Ctrl-r: redo   gt / gT: switch views\nPicker: j/k select, / search, Enter toggle, Tab enter child, Esc close\n:filter orders.status = Shipped      :unfilter orders.status\n:match orders  (require matching children)   :keep orders (keep parents)\n:show orders.freight   :sort_desc orders.order_date   :unsort field\n:join orders customers   :fields customers.orders   :open customers\n:save views/customers.json    :load views/customers.json    :view 2\n:limit 200    :refresh    :help    :quit\n\nEsc cancels input/popups or a running query. q closes help; q quits browsing.\nFilters affect children by default; :match propagates matching to the root.\nData is read-only. Saved views contain query settings, not credentials.";
 
-pub fn draw(frame: &mut Frame, app: &App) {
-    let size = frame.area();
-
-    // Layout: dashboard bar (1 row), body (flexible), command bar (1 row)
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Min(0),
-            Constraint::Length(1),
-        ])
-        .split(size);
-
-    draw_dashboard_bar(frame, chunks[0]);
-    draw_body(frame, app, chunks[1]);
-    draw_command_bar(frame, app, chunks[2]);
-
-    // Draw notice popup if showing
-    if app.has_notice() {
-        draw_notice_popup(frame, size, app);
-    }
-
-    // Draw help overlay if in help mode
-    if matches!(app.input.mode(), tui_input::Mode::Help) {
-        draw_help_overlay(frame, size, app);
-    }
-}
-
-fn draw_dashboard_bar(frame: &mut Frame, area: Rect) {
-    // Simple dashboard indicator
-    let text = Line::from(vec![
-        Span::styled(" Dashboard ", Style::default().fg(Color::Black).bg(Color::Blue).add_modifier(Modifier::BOLD)),
-        Span::raw(" ultorglike demo "),
-    ]);
-    let widget = Paragraph::new(text);
-    frame.render_widget(widget, area);
-}
-
-fn draw_body(frame: &mut Frame, app: &App, area: Rect) {
-    if area.height == 0 || area.width == 0 {
+pub fn draw(frame: &mut Frame, app: &mut App) {
+    let area = frame.area();
+    if area.width < 12 || area.height < 6 {
         return;
     }
-
-    let blocks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(50),
-            Constraint::Percentage(50),
-        ])
-        .split(area);
-
-    draw_metrics_list(frame, app, blocks[0]);
-    draw_info_panel(frame, app, blocks[1]);
-}
-
-fn draw_metrics_list(frame: &mut Frame, app: &App, area: Rect) {
-    let mut block = Block::default()
-        .title(" Metrics ")
-        .borders(Borders::ALL);
-
-    if matches!(app.focus, FocusPanel::Metrics) {
-        block = block.border_style(Style::default().fg(Color::Cyan));
-    }
-
-    let items: Vec<ListItem> = app
-        .data_lines
-        .iter()
-        .enumerate()
-        .map(|(i, line)| {
-            let style = if i == app.selected {
-                Style::default()
-                    .bg(Color::DarkGray)
-                    .fg(Color::White)
-            } else {
-                Style::default()
-            };
-            ListItem::new(Line::from(line.clone())).style(style)
+    let title = app
+        .query
+        .as_ref()
+        .map(|q| q.root.table.qualified())
+        .unwrap_or_else(|| "PostgreSQL".into());
+    line(
+        frame,
+        Rect::new(0, 0, area.width, 1),
+        &format!(
+            " ultorglike  {title}   view {}/{}   ? help   t tables   f fields",
+            app.active_view + 1,
+            app.views.len()
+        ),
+        Style::default().fg(Color::White).bg(Color::Blue),
+    );
+    let hidden = app
+        .query
+        .as_ref()
+        .map(|q| {
+            q.root
+                .filters
+                .iter()
+                .filter(|f| !q.root.columns.contains(&f.column))
+                .count()
+                + q.root
+                    .sort
+                    .iter()
+                    .filter(|s| !q.root.columns.contains(&s.column))
+                    .count()
         })
-        .collect();
-
-    let list = List::new(items)
-        .block(block)
-        .highlight_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
-        .highlight_symbol(">> ");
-
-    frame.render_stateful_widget(list, area, &mut ratatui::widgets::ListState::default());
-}
-
-fn draw_info_panel(frame: &mut Frame, _app: &App, area: Rect) {
-    let block = Block::default()
-        .title(" System Info ")
-        .borders(Borders::ALL);
-
-    let info_lines = vec![
-        "Host:      MacMini (M2)".to_string(),
-        "OS:        macOS Sonoma 14.5".to_string(),
-        "Kernel:    23.5.0".to_string(),
-        "Shell:     zsh 5.9".to_string(),
-        "Terminal:  iTerm2".to_string(),
-        "CPU:       Apple M2 (8 cores)".to_string(),
-        "Memory:    32 GB LPDDR5".to_string(),
-        "Storage:   512 GB NVMe".to_string(),
-    ];
-
-    let text = info_lines
-        .iter()
-        .map(|l| Line::from(l.as_str()))
-        .collect::<Vec<_>>();
-
-    let widget = Paragraph::new(text).block(block);
-    frame.render_widget(widget, area);
-}
-
-fn draw_command_bar(frame: &mut Frame, app: &App, area: Rect) {
-    use tui_widgets::command_bar;
-
-    // Get completion info
-    let mut completion_candidates: Option<Vec<String>> = None;
-    let completion = if app.input.command_buffer().starts_with(':') {
-        let partial = app.input.command_buffer().trim_start_matches(':');
-        let matches: Vec<String> = app
-            .input
-            .command_names()
-            .into_iter()
-            .filter(|c| c.starts_with(partial))
-            .collect();
-        if !matches.is_empty() {
-            completion_candidates = Some(matches);
-            completion_candidates.as_ref().map(|c| (c.as_slice(), 0))
+        .unwrap_or(0);
+    let mode = match app.input.mode() {
+        Mode::Normal => "NORMAL",
+        Mode::Command(_) => "COMMAND",
+        Mode::Help => "HELP",
+        Mode::Other(s) => s.as_str(),
+        _ => "NORMAL",
+    };
+    line(
+        frame,
+        Rect::new(0, 1, area.width, 1),
+        &format!(
+            " {mode} {}  {}  {}{}",
+            app.count,
+            app.location(),
+            if app.busy { "Loading…  " } else { "" },
+            if hidden > 0 {
+                format!("[{hidden} hidden dependencies; f to inspect]")
+            } else {
+                String::new()
+            }
+        ),
+        Style::default().fg(Color::Cyan),
+    );
+    let header_height = app
+        .grid
+        .header_height
+        .max(1)
+        .min((area.height - 5) as usize) as u16;
+    let body = Rect::new(
+        0,
+        2 + header_height,
+        area.width,
+        area.height - 5 - header_height,
+    );
+    app.viewport_width = area.width as usize;
+    app.viewport_height = body.height as usize;
+    app.clamp();
+    let header = Rect::new(0, 2, area.width, header_height);
+    grid(frame, app, header, body);
+    let value = app
+        .grid
+        .cell_at(app.column, app.y)
+        .map(|c| c.text.as_str())
+        .unwrap_or("");
+    line(
+        frame,
+        Rect::new(0, area.height - 3, area.width, 1),
+        &format!(" {}:{}  {}", app.y + 1, app.column + 1, value),
+        Style::default().fg(Color::Gray),
+    );
+    line(
+        frame,
+        Rect::new(0, area.height - 2, area.width, 1),
+        &format!(" {}", app.message),
+        Style::default().fg(if app.error {
+            Color::LightRed
         } else {
-            None
+            Color::Gray
+        }),
+    );
+    let prompt = match app.input.mode() {
+        Mode::Command(_) => format!(":{}", app.input.command_buffer()),
+        Mode::Other(s) if s == "search" => format!("/{}", app.search),
+        _ => " : command   / search   Enter expand   zc collapse   u undo".into(),
+    };
+    line(
+        frame,
+        Rect::new(0, area.height - 1, area.width, 1),
+        &prompt,
+        Style::default().fg(Color::Yellow),
+    );
+    if matches!(app.input.mode(), Mode::Command(_))
+        || app.input.mode() == &Mode::Other("search".into())
+    {
+        frame.set_cursor_position((
+            prompt.width().min(area.width.saturating_sub(1) as usize) as u16,
+            area.height - 1,
+        ));
+    }
+    if app.input.mode() == &Mode::Help {
+        let popup = popup(area, 100, 25);
+        frame.render_widget(Clear, popup);
+        frame.render_widget(
+            Paragraph::new(HELP).block(
+                Block::default()
+                    .title(" Help · q / Esc to close ")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Cyan)),
+            ),
+            popup,
+        );
+    }
+    if let Some(picker) = &app.picker {
+        let rect = popup(area, 100, 22);
+        frame.render_widget(Clear, rect);
+        let title = picker
+            .node
+            .and_then(|id| app.query.as_ref()?.root.path(id))
+            .map(|p| format!("Fields: {}", p.join(" → ")))
+            .unwrap_or_else(|| "Tables".into());
+        frame.render_widget(
+            Block::default()
+                .title(format!(" {title} "))
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan)),
+            rect,
+        );
+        if rect.height < 5 || rect.width < 4 {
+            return;
         }
-    } else {
-        None
-    };
-
-    command_bar(frame, area, app.input.command_buffer(), completion);
+        line(
+            frame,
+            Rect::new(rect.x + 1, rect.y + 1, rect.width - 2, 1),
+            &format!(
+                "/{}{}",
+                picker.text,
+                if picker.searching { " ▏" } else { "" }
+            ),
+            Style::default().fg(Color::Yellow),
+        );
+        let height = rect.height.saturating_sub(4) as usize;
+        let start = picker.selected.saturating_sub(height.saturating_sub(1));
+        for (index, entry) in picker.entries.iter().enumerate().skip(start).take(height) {
+            line(
+                frame,
+                Rect::new(
+                    rect.x + 1,
+                    rect.y + 2 + (index - start) as u16,
+                    rect.width - 2,
+                    1,
+                ),
+                &entry.label,
+                if index == picker.selected {
+                    Style::default().fg(Color::Black).bg(Color::Cyan)
+                } else {
+                    Style::default().fg(Color::White)
+                },
+            );
+        }
+        line(
+            frame,
+            Rect::new(rect.x + 1, rect.bottom() - 2, rect.width - 2, 1),
+            "j/k move · / search · Enter toggle · Tab child · Esc close",
+            Style::default().fg(Color::Gray),
+        );
+    }
 }
 
-fn draw_notice_popup(frame: &mut Frame, size: Rect, app: &App) {
-    let Some(rows) = app.notice_rows() else {
-        return;
-    };
-    let title = app.notice_title().unwrap_or("Notice");
-
-    // Popup dimensions (60% of screen)
-    let width = ((size.width as f32) * 0.6) as u16;
-    let height = ((size.height as f32) * 0.5) as u16;
-    let width = width.max(40).min(size.width.saturating_sub(4));
-    let height = height.max(8).min(size.height.saturating_sub(4));
-
-    let popup_area = Rect {
-        x: size.x + (size.width.saturating_sub(width)) / 2,
-        y: size.y + (size.height.saturating_sub(height)) / 2,
-        width,
-        height,
-    };
-
-    frame.render_widget(ratatui::widgets::Clear, popup_area);
-
-    let block = Block::default()
-        .title(format!(" {} ", title))
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Yellow));
-
-    let items: Vec<ListItem> = rows
-        .iter()
-        .enumerate()
-        .map(|(i, row)| {
-            let text = row.join("  ");
-            let style = if i == app.notice.as_ref().unwrap().selected {
-                Style::default()
-                    .bg(Color::Cyan)
-                    .fg(Color::Black)
-                    .add_modifier(Modifier::BOLD)
+fn grid(frame: &mut Frame, app: &App, header: Rect, body: Rect) {
+    frame.render_widget(
+        Block::default().style(Style::default().bg(Color::DarkGray)),
+        header,
+    );
+    for heading in &app.grid.headings {
+        let x = app.grid.x(heading.first_column);
+        let width: usize = app
+            .grid
+            .widths
+            .iter()
+            .skip(heading.first_column)
+            .take(heading.columns)
+            .sum();
+        if heading.depth >= header.height as usize {
+            continue;
+        }
+        let style = Style::default()
+            .fg(if heading.columns > 1 {
+                Color::Cyan
             } else {
-                Style::default()
+                Color::White
+            })
+            .bg(Color::DarkGray)
+            .add_modifier(Modifier::BOLD);
+        clipped(
+            frame,
+            Rect::new(header.x, header.y + heading.depth as u16, header.width, 1),
+            x,
+            app.scroll_x,
+            width,
+            &format!(" {}", heading.label),
+            style,
+        );
+    }
+    if app.document.rows.is_empty() {
+        line(
+            frame,
+            body,
+            if app.busy {
+                " Loading data…"
+            } else {
+                " No matching rows. Headers and query actions remain available; use u to undo or t to open a table."
+            },
+            Style::default().fg(Color::Gray),
+        );
+        return;
+    }
+    let selected = app.address();
+    for cell in &app.grid.cells {
+        let top = cell.y.max(app.scroll_y);
+        let bottom = (cell.y + cell.height).min(app.scroll_y + body.height as usize);
+        if top >= bottom {
+            continue;
+        }
+        let x = app.grid.x(cell.column);
+        let width = app.grid.widths[cell.column];
+        let current = selected.as_ref() == Some(&cell.address);
+        let style = if current {
+            Style::default().fg(Color::Black).bg(Color::Yellow)
+        } else if cell.text == "NULL" || cell.text == "∅" {
+            Style::default().fg(Color::DarkGray)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        for y in top..bottom {
+            // Repeat a spanning parent's label at the top of the viewport for context.
+            let text = if y == top {
+                cell.text.replace(['\n', '\r', '\t'], " ")
+            } else {
+                String::new()
             };
-            ListItem::new(Line::from(text)).style(style)
-        })
-        .collect();
-
-    let list = List::new(items)
-        .block(block)
-        .highlight_symbol(">> ");
-
-    frame.render_stateful_widget(list, popup_area, &mut ratatui::widgets::ListState::default());
+            let row = Rect::new(body.x, body.y + (y - app.scroll_y) as u16, body.width, 1);
+            clipped(
+                frame,
+                row,
+                x,
+                app.scroll_x,
+                width.saturating_sub(1),
+                &format!(" {text}"),
+                style,
+            );
+            clipped(
+                frame,
+                row,
+                x + width - 1,
+                app.scroll_x,
+                1,
+                "│",
+                Style::default().fg(Color::DarkGray),
+            );
+        }
+    }
 }
-
-fn draw_help_overlay(frame: &mut Frame, size: Rect, _app: &App) {
-
-    let width = ((size.width as f32) * 0.7) as u16;
-    let height = ((size.height as f32) * 0.7) as u16;
-    let width = width.max(50).min(size.width.saturating_sub(4));
-    let height = height.max(15).min(size.height.saturating_sub(4));
-
-    let popup_area = Rect {
-        x: size.x + (size.width.saturating_sub(width)) / 2,
-        y: size.y + (size.height.saturating_sub(height)) / 2,
+fn line(frame: &mut Frame, area: Rect, text: &str, style: Style) {
+    frame.render_widget(Paragraph::new(text).style(style), area);
+}
+fn clipped(
+    frame: &mut Frame,
+    area: Rect,
+    x: usize,
+    scroll: usize,
+    width: usize,
+    text: &str,
+    style: Style,
+) {
+    let start = x.max(scroll);
+    let end = (x + width).min(scroll + area.width as usize);
+    if start >= end || area.height == 0 {
+        return;
+    }
+    let skip = start - x;
+    let available = end - start;
+    let mut at = 0;
+    let mut used = 0;
+    let mut output = String::new();
+    for ch in text.chars() {
+        let w = ch.width().unwrap_or(0);
+        if w == 0 {
+            continue;
+        }
+        if at + w <= skip {
+            at += w;
+            continue;
+        }
+        if at < skip {
+            let pad = at + w - skip;
+            if pad <= available {
+                output.push_str(&" ".repeat(pad));
+                used += pad;
+            }
+            at += w;
+            continue;
+        }
+        if used + w > available {
+            break;
+        }
+        output.push(ch);
+        used += w;
+        at += w;
+    }
+    frame.render_widget(
+        Paragraph::new(output).style(style),
+        Rect::new(
+            area.x + (start - scroll) as u16,
+            area.y,
+            available as u16,
+            1,
+        ),
+    );
+}
+fn popup(area: Rect, width: u16, height: u16) -> Rect {
+    let width = width.min(area.width.saturating_sub(2));
+    let height = height.min(area.height.saturating_sub(2));
+    Rect::new(
+        area.x + (area.width - width) / 2,
+        area.y + (area.height - height) / 2,
         width,
         height,
-    };
-
-    frame.render_widget(ratatui::widgets::Clear, popup_area);
-
-    let block = Block::default()
-        .title(" Help - Press any key to close ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
-
-    let help_text = vec![
-        "Navigation:".to_string(),
-        "  j / down      Move down".to_string(),
-        "  k / up        Move up".to_string(),
-        "  gg            Jump to first row".to_string(),
-        "  G             Jump to last row".to_string(),
-        "".to_string(),
-        "Pan viewport:".to_string(),
-        "  h / left      Pan left".to_string(),
-        "  l / right     Pan right".to_string(),
-        "".to_string(),
-        "Zoom:".to_string(),
-        "  + / =         Zoom in".to_string(),
-        "  -             Zoom out".to_string(),
-        "  c             Center viewport".to_string(),
-        "".to_string(),
-        "Modes:".to_string(),
-        "  i             Enter insert mode".to_string(),
-        "  v             Enter visual mode".to_string(),
-        "  :             Enter command mode".to_string(),
-        "".to_string(),
-        "Commands:".to_string(),
-        "  :quit or :q   Quit the app".to_string(),
-        "  :help or :h   Toggle help".to_string(),
-        "".to_string(),
-        "Leader key: , (comma)".to_string(),
-        "  , q           Quit".to_string(),
-        "  , h           Help".to_string(),
-    ];
-
-    let content_lines: Vec<ratatui::text::Line> = help_text
-        .iter()
-        .map(|l| ratatui::text::Line::from(l.as_str()))
-        .collect();
-
-    let widget = Paragraph::new(content_lines)
-        .block(block)
-        .wrap(ratatui::widgets::Wrap { trim: true });
-
-    frame.render_widget(widget, popup_area);
+    )
 }

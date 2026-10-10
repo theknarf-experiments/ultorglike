@@ -1,0 +1,12 @@
+[package]
+name = "query-engine"
+version = "0.1.0"
+edition = "2021"
+description = "PostgreSQL catalog and nested relational query execution"
+
+[dependencies]
+postgres = { version = "0.19", features = ["with-serde_json-1"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+data-model = { path = "../data-model" }
+thiserror = "2"
