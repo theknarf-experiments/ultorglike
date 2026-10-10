@@ -24,6 +24,17 @@ pub struct Document {
     pub fields: Vec<Field>,
     pub rows: Vec<Record>,
     pub truncated: bool,
+    pub collections: Vec<Collection>,
+}
+
+/// Loaded window of one collection, identified by its ancestor row identities.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Collection {
+    pub node: u64,
+    pub parents: Vec<String>,
+    pub offset: usize,
+    pub loaded: usize,
+    pub more: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -149,7 +160,10 @@ impl Grid {
                     }
                 } else {
                     let text = if field.relation {
-                        format!("[{} rows]", row.children.get(&field.id).map_or(0, Vec::len))
+                        row.children
+                            .get(&field.id)
+                            .map(|rows| format!("[{} rows]", rows.len()))
+                            .unwrap_or_else(|| "[folded]".into())
                     } else {
                         match row.values.get(&field.id) {
                             Some(Some(value)) => value.clone(),
@@ -275,6 +289,7 @@ mod tests {
                 ],
             )],
             truncated: false,
+            collections: vec![],
         };
         let grid = Grid::build(&doc);
         assert_eq!(grid.height, 3);
@@ -298,6 +313,7 @@ mod tests {
             fields: vec![scalar("name"), relation("orders", vec![scalar("date")])],
             rows: vec![row("a", &[])],
             truncated: false,
+            collections: vec![],
         };
         let grid = Grid::build(&doc);
         assert_eq!(grid.height, 1);

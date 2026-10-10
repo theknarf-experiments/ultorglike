@@ -124,6 +124,7 @@ The unused DataFusion/DuckDB stubs have been replaced by the working PostgreSQL 
 | `gg` / `G` | First / last loaded row |
 | `0` / `$` | First / last visible column |
 | `Ctrl-d` / `Ctrl-u` | Half-page down / up |
+| `]p` / `[p`, `+` | Next / previous collection page; load more |
 | `Enter` / `zo`, `zc`, `za` | Expand, collapse, toggle the selected relation |
 | `/`, `n`, `N` | Search loaded values; next / previous match |
 | `t` | Searchable table picker; opening creates a view |
@@ -160,9 +161,16 @@ as tie-breakers; `:unsort field` removes a term.
 - A background worker opens a connection per request. Superseded requests are
   cancelled and stale responses discarded. A ten-second statement timeout bounds
   expensive queries; errors leave the previous result visible and the query editable.
-- Results default to 100 rows **per relation instance**. Truncation is shown in the
-  status bar. `:limit 200` increases the limit (maximum 500). Search applies to loaded
-  rows only; filters and sorts apply in PostgreSQL before limiting.
+- Results default to 100 rows **per relation instance**. The selected collection's
+  range appears above the grid (`+` means more rows). `]p` / `[p` page through that
+  collection; `+` loads another page into it (up to 5000 loaded rows). `:nextpage
+  customers` pages the root even when a child is selected. `:prevpage` and `:more`
+  also accept relation paths. `:limit 200` sets page size (maximum 500). Each
+  parent's child collections page independently, with stable key ordering.
+- Folded collections load when expanded; formulas still aggregate their full matching
+  rows. Query edits reset collection windows. Reusable saved views open at page one.
+  Search applies to loaded values; filters and sorts run in PostgreSQL before paging.
+  Concurrent database changes may shift offset-based page boundaries.
 - The grid renders recursive grouped headers, spanning parent cells, empty child
   placeholders, persistent horizontal/vertical scrolling, and Unicode values.
   `NULL` denotes a scalar null, `∅` an empty relationship, and `…` a pending field.

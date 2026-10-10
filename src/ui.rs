@@ -8,7 +8,7 @@ use ratatui::{
 use tui_input::Mode;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-pub const HELP:&str="NAVIGATION\nh j k l / arrows: move cells     10j: count     gg / G: first / last\nCtrl-d / Ctrl-u: half page       0 / $: first / last column\n/ search loaded values          n / N: next / previous match\nEnter / zo: expand              zc: collapse     za: toggle\n\nQUERY\nt: tables   f: fields & relationships   s / S: sort asc / desc   F: filter\nx: hide field   u: undo   Ctrl-r: redo   gt / gT: switch views\nPicker: j/k select, / search, Enter toggle, Tab enter child, Esc close\n:filter orders.status = Shipped      :unfilter orders.status\n:match orders  (require matching children)   :keep orders (keep parents)\n:show orders.freight   :sort_desc orders.order_date   :unsort field\n:join orders customers   :fields customers.orders   :open customers\n:save views/customers.json    :load views/customers.json    :view 2\n:formula orders.line_items.amount = [quantity] * [unit_price]\n:formula orders.total = sum([line_items.amount]) + [freight]\n:unformula orders.total   (remove formula; x only hides it)\n:limit 200    :refresh    :help    :quit\n\nEsc cancels input/popups or a running query. q closes help; q quits browsing.\nFilters affect children by default; :match propagates matching to the root.\nData is read-only. Saved views contain query settings, not credentials.";
+pub const HELP:&str="NAVIGATION\nh j k l / arrows: move cells     10j: count     gg / G: first / last\nCtrl-d / Ctrl-u: half page       0 / $: first / last column\n/ search loaded values          n / N: next / previous match\nEnter / zo: expand              zc: collapse     za: toggle\n\nQUERY\nt: tables   f: fields & relationships   s / S: sort asc / desc   F: filter\nx: hide field   u: undo   Ctrl-r: redo   gt / gT: switch views\nPicker: j/k select, / search, Enter toggle, Tab enter child, Esc close\n:filter orders.status = Shipped      :unfilter orders.status\n:match orders  (require matching children)   :keep orders (keep parents)\n:show orders.freight   :sort_desc orders.order_date   :unsort field\n:join orders customers   :fields customers.orders   :open customers\n:save views/customers.json    :load views/customers.json    :view 2\n:formula orders.line_items.amount = [quantity] * [unit_price]\n:formula orders.total = sum([line_items.amount]) + [freight]\n:unformula orders.total   (remove formula; x only hides it)\n]p / [p: next / previous collection page   +: load more\n:limit 200    :refresh    :help    :quit\n\nEsc cancels input/popups or a running query. q closes help; q quits browsing.\nFilters affect children by default; :match propagates matching to the root.\nData is read-only. Saved views contain query settings, not credentials.";
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
@@ -57,9 +57,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         frame,
         Rect::new(0, 1, area.width, 1),
         &format!(
-            " {mode} {}  {}  {}{}",
+            " {mode} {}  {}  {}  {}{}",
             app.count,
             app.location(),
+            app.range(),
             if app.busy { "Loading…  " } else { "" },
             if hidden > 0 {
                 format!("[{hidden} hidden dependencies; f to inspect]")

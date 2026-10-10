@@ -1,5 +1,5 @@
 use crate::{catalog::discover, query::compile, Catalog, Query, Result};
-use data_model::document::{Document, Record};
+use data_model::document::{Collection, Document, Record};
 use postgres::{Client, NoTls};
 use std::{
     sync::{
@@ -33,21 +33,42 @@ pub fn execute(client: &mut Client, query: &Query, catalog: &Catalog) -> Result<
         let json: serde_json::Value = row.get(0);
         rows.push(serde_json::from_value::<Record>(json)?);
     }
-    fn trim(rows: &mut Vec<Record>, limit: usize) -> bool {
-        let mut truncated = rows.len() > limit;
+    fn trim(
+        rows: &mut Vec<Record>,
+        node: &crate::Node,
+        parents: &[String],
+        query: &Query,
+        collections: &mut Vec<Collection>,
+    ) {
+        let (offset, limit) = query.window(node.id, parents);
+        let more = rows.len() > limit;
         rows.truncate(limit);
+        collections.push(Collection {
+            node: node.id,
+            parents: parents.to_vec(),
+            offset,
+            loaded: rows.len(),
+            more,
+        });
         for row in rows {
-            for children in row.children.values_mut() {
-                truncated |= trim(children, limit);
+            let mut parents = parents.to_vec();
+            parents.push(row.key.clone());
+            for child in &node.children {
+                if let Some(rows) = row.children.get_mut(&child.id.to_string()) {
+                    trim(rows, child, &parents, query, collections);
+                }
             }
         }
-        truncated
     }
-    let truncated = trim(&mut rows, query.limit);
+    let mut collections = vec![];
+    trim(&mut rows, &query.root, &[], query, &mut collections);
+    let truncated = collections.iter().any(|c| c.more || c.offset > 0);
+
     Ok(Document {
         fields: query.root.fields(),
         rows,
         truncated,
+        collections,
     })
 }
 

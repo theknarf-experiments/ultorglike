@@ -150,6 +150,7 @@ fn navigation_counts_search_and_narrow_terminal() {
         fields: app.query.as_ref().unwrap().root.fields(),
         rows,
         truncated: false,
+        collections: vec![],
     };
     app.grid = data_model::document::Grid::build(&app.document);
     type_keys(&mut app, "10j");

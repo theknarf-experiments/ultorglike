@@ -2,7 +2,7 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use data_model::document::{Address, Document, Grid};
 use query_engine::{
     executor::{Response, Worker},
-    Catalog, Filter, Formula, Operator, Query, Relationship, Sort,
+    Catalog, Filter, Formula, Operator, Page, Query, Relationship, Sort,
 };
 use tui_input::{InputContext, Mode};
 
@@ -78,6 +78,9 @@ impl App {
             "redo",
             "save",
             "load",
+            "nextpage",
+            "prevpage",
+            "more",
             "limit",
             "refresh",
             "view",
@@ -155,7 +158,7 @@ impl App {
                     self.error = false;
                     self.message = if self.document.truncated {
                         format!(
-                            "Partial result: up to {} rows per relation; :limit 200 to load more",
+                            "Partial result: {} rows per page; ]p next, [p previous, + more",
                             self.query.as_ref().map_or(100, |q| q.limit)
                         )
                     } else {
@@ -177,6 +180,65 @@ impl App {
         self.selected_field()
             .and_then(|f| f.split(':').next()?.parse().ok())
             .unwrap_or(1)
+    }
+    pub fn collection(&self, id: u64) -> Option<&data_model::document::Collection> {
+        let depth = self.query.as_ref()?.root.path(id)?.len() - 1;
+        let address = self.address().unwrap_or_default();
+        if address.rows.len() < depth {
+            return None;
+        }
+        self.document
+            .collections
+            .iter()
+            .find(|c| c.node == id && c.parents == address.rows[..depth])
+    }
+    pub fn range(&self) -> String {
+        self.collection(self.node_id())
+            .map(|c| {
+                format!(
+                    "rows {}–{}{}",
+                    if c.loaded == 0 { 0 } else { c.offset + 1 },
+                    c.offset + c.loaded,
+                    if c.more { " +" } else { "" }
+                )
+            })
+            .unwrap_or_default()
+    }
+    fn page(&mut self, action: &str, id: u64) -> std::result::Result<(), String> {
+        if self.busy {
+            return Err("Wait for the current query or cancel with Esc".into());
+        }
+        let collection = self
+            .collection(id)
+            .ok_or("Expand and select the collection first")?
+            .clone();
+        if action != "prevpage" && !collection.more {
+            return Err("No more rows in this collection".into());
+        }
+        let mut query = self.query.clone().ok_or("Open a table first")?;
+        let (offset, limit) = query.window(id, &collection.parents);
+        let (offset, limit) = match action {
+            "nextpage" => (offset + collection.loaded, query.limit),
+            "prevpage" => (offset.saturating_sub(query.limit), query.limit),
+            _ => (offset, (limit + query.limit).min(5000)),
+        };
+        if action == "more" && limit == 5000 && collection.loaded == 5000 {
+            return Err("Use nextpage to browse past 5000 loaded rows".into());
+        }
+        query
+            .pages
+            .retain(|p| p.node != id || p.parents != collection.parents);
+        query.pages.push(Page {
+            node: id,
+            parents: collection.parents,
+            offset,
+            limit,
+        });
+        query.validate(&self.catalog).map_err(|e| e.to_string())?;
+        self.query = Some(query);
+        self.error = false;
+        self.refresh();
+        Ok(())
     }
     pub fn location(&self) -> String {
         let Some(query) = &self.query else {
@@ -257,6 +319,7 @@ impl App {
             return;
         };
         let mut next = old.clone();
+        next.pages.clear();
         let result = modify(&mut next, &self.catalog)
             .and_then(|_| next.validate(&self.catalog).map_err(|e| e.to_string()));
         match result {
@@ -946,6 +1009,10 @@ impl App {
                     }
                     self.refresh();
                 }
+            }
+            "nextpage" | "prevpage" | "more" => {
+                let id = self.relation_target(optional)?;
+                self.page(action, id)?;
             }
             "limit" => {
                 let n = arg

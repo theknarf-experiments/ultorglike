@@ -446,3 +446,68 @@ fn formula_totals_ignore_display_limits_and_preserve_scope() {
     let filtered = execute(&mut client, &query, &catalog).unwrap();
     assert_eq!(value(&filtered.rows[0], "1:total_spend"), "721.525");
 }
+
+#[test]
+#[ignore = "requires seeded PostgreSQL; scripts/check.sh runs this test"]
+fn independent_collection_pages_and_lazy_folds() {
+    use query_engine::Page;
+    let url = std::env::var("TEST_DATABASE_URL").unwrap();
+    let mut client = connect(&url).unwrap();
+    let catalog = discover(&mut client).unwrap();
+    let mut query: Query =
+        serde_json::from_str(include_str!("../../../examples/customer-totals.json")).unwrap();
+    query.limit = 1;
+    let first = execute(&mut client, &query, &catalog).unwrap();
+    let customer = &first.rows[0];
+    let total = customer.values["1:total_spend"].clone();
+    let first_order = &customer.children["2"][0];
+    let first_item = &first_order.children["3"][0];
+    let parents = vec![customer.key.clone(), first_order.key.clone()];
+    query.pages.push(Page {
+        node: 3,
+        parents: parents.clone(),
+        offset: 1,
+        limit: 1,
+    });
+    let second = execute(&mut client, &query, &catalog).unwrap();
+    assert_eq!(second.rows[0].key, customer.key);
+    assert_eq!(second.rows[0].values["1:total_spend"], total);
+    assert_eq!(second.rows[0].children["2"][0].key, first_order.key);
+    assert_ne!(
+        second.rows[0].children["2"][0].children["3"][0].key,
+        first_item.key
+    );
+    let page = second
+        .collections
+        .iter()
+        .find(|c| c.node == 3 && c.parents == parents)
+        .unwrap();
+    assert_eq!((page.offset, page.loaded, page.more), (1, 1, false));
+    query.pages[0].offset = 0;
+    query.pages[0].limit = 2;
+    assert_eq!(
+        execute(&mut client, &query, &catalog).unwrap().rows[0].children["2"][0].children["3"]
+            .len(),
+        2
+    );
+    // Advance the root independently, then return; no skipped/duplicated root identity.
+    query.pages.push(Page {
+        node: 1,
+        parents: vec![],
+        offset: 1,
+        limit: 1,
+    });
+    let next = execute(&mut client, &query, &catalog).unwrap();
+    assert_ne!(next.rows[0].key, customer.key);
+    query.pages.pop();
+    query.root.find_mut(3).unwrap().expanded = false;
+    let folded = execute(&mut client, &query, &catalog).unwrap();
+    assert!(!folded.rows[0].children["2"][0].children.contains_key("3"));
+    assert_eq!(folded.rows[0].values["1:total_spend"], total);
+    assert!(!folded.collections.iter().any(|c| c.node == 3));
+    let loaded: Query = serde_json::from_str(&serde_json::to_string(&query).unwrap()).unwrap();
+    assert!(
+        loaded.pages.is_empty(),
+        "Reusable views must not save runtime page positions"
+    );
+}

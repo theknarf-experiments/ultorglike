@@ -12,6 +12,16 @@ pub struct Query {
     pub root: Node,
     pub limit: usize,
     pub next_id: u64,
+    /// Runtime collection windows; reusable views always open at their first page.
+    #[serde(skip)]
+    pub pages: Vec<Page>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Page {
+    pub node: u64,
+    pub parents: Vec<String>,
+    pub offset: usize,
+    pub limit: usize,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Node {
@@ -196,6 +206,7 @@ impl Query {
             root: Node::new(1, table),
             limit: 100,
             next_id: 2,
+            pages: vec![],
         }
     }
     pub fn add_relationship(
@@ -241,7 +252,29 @@ impl Query {
         }
         Some(node.id)
     }
+    pub fn window(&self, node: u64, parents: &[String]) -> (usize, usize) {
+        self.pages
+            .iter()
+            .find(|p| p.node == node && p.parents == parents)
+            .map(|p| (p.offset, p.limit))
+            .unwrap_or((0, self.limit))
+    }
     pub fn validate(&self, catalog: &Catalog) -> Result<()> {
+        if self.pages.len() > 1000
+            || self.pages.iter().any(|p| {
+                p.limit == 0
+                    || p.limit > 5000
+                    || p.offset > u32::MAX as usize
+                    || self
+                        .root
+                        .path(p.node)
+                        .is_none_or(|path| path.len() != p.parents.len() + 1)
+            })
+        {
+            return Err(Error::Invalid(
+                "Invalid collection window (maximum 5000 loaded rows, 1000 windows)".into(),
+            ));
+        }
         if self.version != 1 || self.limit == 0 || self.limit > 500 {
             return Err(Error::Invalid(
                 "Unsupported view version or limit (must be 1–500)".into(),
@@ -339,7 +372,7 @@ pub struct Compiled {
 pub fn compile(query: &Query, catalog: &Catalog) -> Result<Compiled> {
     query.validate(catalog)?;
     let mut compiler = Compiler::new(catalog, query.limit);
-    let sql = compiler.select(&query.root, None)?;
+    let sql = compiler.select(&query.root, &[], &query.pages)?;
     Ok(Compiled {
         sql,
         params: compiler.params,
@@ -535,7 +568,8 @@ impl<'a> Compiler<'a> {
             terms.join(" AND ")
         })
     }
-    fn select(&mut self, node: &Node, parent: Option<u64>) -> Result<String> {
+    fn select(&mut self, node: &Node, ancestors: &[&Node], pages: &[Page]) -> Result<String> {
+        let parent = ancestors.last().map(|n| n.id);
         let alias = format!("t{}", node.id);
         let table = self.catalog.table(&node.table).unwrap();
         let keys = if table.primary_keys.is_empty() {
@@ -571,8 +605,10 @@ impl<'a> Compiler<'a> {
                 .join(" || ")
         };
         let mut children = vec![];
-        for child in &node.children {
-            let sql = self.select(child, Some(node.id))?;
+        for child in node.children.iter().filter(|n| n.expanded) {
+            let mut ancestors = ancestors.to_vec();
+            ancestors.push(node);
+            let sql = self.select(child, &ancestors, pages)?;
             children.push(format!("'{}', COALESCE((SELECT jsonb_agg(s.doc ORDER BY s.ord) FROM ({sql}) s), '[]'::jsonb)",child.id));
         }
         let conditions = self.conditions(node, parent)?;
@@ -602,6 +638,44 @@ impl<'a> Compiler<'a> {
         } else {
             sort.join(",")
         };
-        Ok(format!("SELECT jsonb_build_object('key',to_jsonb(ARRAY[{key}]::text[])::text,'values',({values}),'children',jsonb_build_object({})) AS doc, row_number() OVER (ORDER BY {order}) AS ord FROM {} {alias} WHERE {conditions} ORDER BY {order} LIMIT {}",children.join(","),node.table.sql(),self.limit+1))
+        let mut offsets = vec![];
+        let mut limits = vec![];
+        for page in pages.iter().filter(|p| p.node == node.id) {
+            let mut conditions = vec![];
+            for (ancestor, key) in ancestors.iter().zip(&page.parents) {
+                let table = self.catalog.table(&ancestor.table).unwrap();
+                let keys: Vec<_> = if table.primary_keys.is_empty() {
+                    table.columns.iter().map(|c| &c.name).collect()
+                } else {
+                    table.primary_keys.iter().collect()
+                };
+                let keys = keys
+                    .iter()
+                    .map(|k| format!("t{}.{}::text", ancestor.id, quote(k)))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                self.params.push(key.clone());
+                conditions.push(format!(
+                    "to_jsonb(ARRAY[{keys}]::text[])::text = ${}::text",
+                    self.params.len()
+                ));
+            }
+            let condition = if conditions.is_empty() {
+                "TRUE".into()
+            } else {
+                conditions.join(" AND ")
+            };
+            offsets.push(format!("WHEN {condition} THEN {}", page.offset));
+            limits.push(format!("WHEN {condition} THEN {}", page.limit + 1));
+        }
+        let (offset, limit) = if offsets.is_empty() {
+            ("0".into(), (self.limit + 1).to_string())
+        } else {
+            (
+                format!("CASE {} ELSE 0 END", offsets.join(" ")),
+                format!("CASE {} ELSE {} END", limits.join(" "), self.limit + 1),
+            )
+        };
+        Ok(format!("SELECT jsonb_build_object('key',to_jsonb(ARRAY[{key}]::text[])::text,'values',({values}),'children',jsonb_build_object({})) AS doc, row_number() OVER (ORDER BY {order}) AS ord FROM {} {alias} WHERE {conditions} ORDER BY {order} LIMIT ({limit}) OFFSET ({offset})",children.join(","),node.table.sql()))
     }
 }
