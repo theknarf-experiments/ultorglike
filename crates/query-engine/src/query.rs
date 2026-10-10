@@ -15,6 +15,8 @@ pub struct Query {
     /// Runtime collection windows; reusable views always open at their first page.
     #[serde(skip)]
     pub pages: Vec<Page>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub widths: std::collections::BTreeMap<String, usize>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Page {
@@ -207,6 +209,7 @@ impl Query {
             limit: 100,
             next_id: 2,
             pages: vec![],
+            widths: Default::default(),
         }
     }
     pub fn add_relationship(
@@ -260,6 +263,9 @@ impl Query {
             .unwrap_or((0, self.limit))
     }
     pub fn validate(&self, catalog: &Catalog) -> Result<()> {
+        if self.widths.len() > 5000 || self.widths.values().any(|w| !(4..=160).contains(w)) {
+            return Err(Error::Invalid("Column width must be 4–160 cells".into()));
+        }
         if self.pages.len() > 1000
             || self.pages.iter().any(|p| {
                 p.limit == 0

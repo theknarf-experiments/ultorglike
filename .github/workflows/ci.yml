@@ -14,6 +14,8 @@ jobs:
           components: rustfmt, clippy
       - name: Format, unit tests, lint, and seeded database integration
         run: ./scripts/check.sh --postgres
+      - name: Verify TLS trust and hostnames
+        run: ./scripts/check-tls.sh
       - name: Database logs on failure
         if: failure()
         run: docker compose logs postgres

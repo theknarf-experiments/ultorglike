@@ -106,11 +106,16 @@ DATABASE_URL=postgresql://user:password@localhost/database cargo run
 # Alternatively: cargo run -- --database-url postgresql://user:password@localhost/database
 ```
 
-The initial backend supports PostgreSQL connections without TLS. It discovers
+The PostgreSQL backend supports certificate-verified TLS. It discovers
 schemas, tables, primary keys, and foreign keys (including composite keys), and
 allows traversing foreign keys in either direction. Connections use read-only
 transactions by default. Database editing is not implemented. Numeric formulas and aggregates execute in PostgreSQL.
-The unused DataFusion/DuckDB stubs have been replaced by the working PostgreSQL path.
+Use `sslmode=require` in the connection URL to require encryption. TLS verifies the
+server certificate and hostname using the system trust store; set `PGSSLROOTCERT`
+to a PEM CA certificate for a private server. The default PostgreSQL `prefer` mode
+also permits servers without TLS, including the local Compose fixture. Use
+`:reconnect` to retry a connection and refresh the catalog without losing the view.
+TLS uses [postgres-native-tls](https://docs.rs/postgres-native-tls/latest/postgres_native_tls/).
 
 `POSTGRES_PORT=55433 docker compose up -d --wait` overrides the local port; set
 `DATABASE_URL` to match when launching the app.
@@ -175,14 +180,58 @@ as tie-breakers; `:unsort field` removes a term.
   placeholders, persistent horizontal/vertical scrolling, and Unicode values.
   `NULL` denotes a scalar null, `∅` an empty relationship, and `…` a pending field.
 - Maximum query depth is eight, with at most 24 table instances. Tables without
-  primary keys have weaker identity guarantees. Session tabs/history are in memory;
-  saving preserves query settings, not cursor/scroll position or undo history.
+  primary keys have weaker identity guarantees. Reusable view files save query settings;
+  workspace files also preserve tabs, cursor/scroll, paging and undo history.
+
+## Inspect, arrange, and export
+
+`K` opens the full selected value, including multiline content and its type.
+`:query` shows the query tree, filters, sorts, formulas, hidden dependencies and loaded
+ranges. `:sql` shows generated SQL and separately bound parameters; `:schema` shows
+columns, primary keys and relationships. All panels and help scroll with `hjkl`,
+`g`/`G`, PageUp/PageDown, or Ctrl-u/Ctrl-d; Escape/q closes them.
+
+`F` starts an editable filter command using the current condition; `=` starts a new
+formula or edits the selected formula. Command input supports Left/Right, Home/End,
+Delete/Backspace, Ctrl-u (delete before cursor) and Ctrl-k (delete after cursor),
+including Unicode and horizontal scrolling. Up/Down recalls command history.
+
+`:move orders.total 1` reorders a visible field within its relation. `:width
+orders.total 24` sets its width in terminal cells; `]w`/`[w` widen/narrow the selected
+column. Layout changes support undo and are stored with saved views.
+
+`:export json results.json` exports the loaded nested result, with named fields,
+children, row keys, collection ranges, query and an explicit partial-result flag.
+`:export csv results.csv` exports the loaded grid with full-path headers, repeated
+spanning parent values and standard CSV quoting. CSV uses `\N` for SQL NULL, empty
+cells for absent children, and `[folded]` for unloaded collections. Siblings appear
+side by side as in the grid; this is a presentation export, not a relational join.
+Exports include the currently loaded windows only. JSON preserves explicit nulls
+and is preferable when distinguishing null markers from literal text matters.
+
+## Workspaces
+
+`:duplicate` copies a view, `:close` closes it, and `:views` lists open views.
+`gt`/`gT` or `:view N` switches views and restores the cursor/scroll position and
+undo history. `:session_save workspaces/project.json` saves all open views,
+layout, page positions and up to 100 query changes per view. Reopen with
+`:session_load workspaces/project.json` or:
+
+```sh
+cargo run -- --session workspaces/project.json
+```
+
+Workspace files contain queries and row identities, never connection credentials
+or cached result data. Supply the connection separately. They are validated against
+the current catalog before replacing the open workspace. Files are written atomically.
+Reusable `:save` view files still open at page one; workspace files retain page positions.
 
 ## Development workflow
 
 ```sh
 ./scripts/check.sh             # format, workspace tests, strict clippy
 ./scripts/check.sh --postgres  # also start Compose and run real database integration
+./scripts/check-tls.sh         # isolated TLS fixture; trusted/untrusted/hostname checks
 ```
 
 The same workflow runs in [GitHub Actions](.github/workflows/ci.yml). The database

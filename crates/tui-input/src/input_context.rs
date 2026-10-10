@@ -23,6 +23,7 @@ pub struct InputContext {
     handlers: HashMap<String, CommandHandler>,
     /// Input buffer for command mode.
     command_buffer: String,
+    command_cursor: usize,
     /// Command history for up/down navigation.
     command_history: Vec<String>,
     history_index: Option<usize>,
@@ -51,6 +52,7 @@ impl InputContext {
             pending: Vec::new(),
             handlers: HashMap::new(),
             command_buffer: String::new(),
+            command_cursor: 0,
             command_history: Vec::new(),
             history_index: None,
         }
@@ -72,6 +74,7 @@ impl InputContext {
         self.mode = mode;
         self.pending.clear();
         self.command_buffer.clear();
+        self.command_cursor = 0;
         self.history_index = None;
     }
 
@@ -102,6 +105,7 @@ impl InputContext {
     /// Enter command mode.
     pub fn enter_command_mode(&mut self) {
         self.command_buffer.clear();
+        self.command_cursor = 0;
         self.history_index = None;
         self.pending.clear();
         self.mode = Mode::Command(String::new());
@@ -110,25 +114,38 @@ impl InputContext {
     /// Exit command mode.
     pub fn exit_command_mode(&mut self) {
         self.command_buffer.clear();
+        self.command_cursor = 0;
         self.history_index = None;
         self.mode = Mode::Normal;
     }
 
     /// Add to command buffer.
     pub fn push_command_char(&mut self, ch: char) {
-        self.command_buffer.push(ch);
+        self.command_buffer.insert(self.command_cursor, ch);
+        self.command_cursor += ch.len_utf8();
         self.history_index = None;
     }
 
     /// Remove last char from command buffer.
     pub fn pop_command_char(&mut self) {
-        self.command_buffer.pop();
+        if let Some((prev, _)) = self.command_buffer[..self.command_cursor]
+            .char_indices()
+            .last()
+        {
+            self.command_buffer.drain(prev..self.command_cursor);
+            self.command_cursor = prev;
+        }
         self.history_index = None;
     }
 
     /// Get the current command buffer.
     pub fn command_buffer(&self) -> &str {
         &self.command_buffer
+    }
+
+    /// Byte offset of the command cursor, always on a UTF-8 boundary.
+    pub fn command_cursor(&self) -> usize {
+        self.command_cursor
     }
 
     /// Execute the current command buffer.
@@ -139,6 +156,7 @@ impl InputContext {
     fn execute_command_internal(&mut self) -> bool {
         let cmd = self.command_buffer.clone();
         self.command_buffer.clear();
+        self.command_cursor = 0;
         self.history_index = None;
 
         if cmd.is_empty() {
@@ -178,6 +196,7 @@ impl InputContext {
         self.history_index = Some(next_index);
         if let Some(cmd) = self.command_history.get(next_index) {
             self.command_buffer = cmd.clone();
+            self.command_cursor = self.command_buffer.len();
         }
     }
 
@@ -190,10 +209,12 @@ impl InputContext {
             self.history_index = Some(idx + 1);
             if let Some(cmd) = self.command_history.get(idx + 1) {
                 self.command_buffer = cmd.clone();
+                self.command_cursor = self.command_buffer.len();
             }
         } else {
             self.history_index = None;
             self.command_buffer.clear();
+            self.command_cursor = 0;
         }
     }
 
@@ -220,6 +241,51 @@ impl InputContext {
         use crossterm::event::KeyCode;
 
         match key.code {
+            KeyCode::Left => {
+                self.command_cursor = self.command_buffer[..self.command_cursor]
+                    .char_indices()
+                    .last()
+                    .map(|(i, _)| i)
+                    .unwrap_or(0);
+                None
+            }
+            KeyCode::Right => {
+                if let Some(ch) = self.command_buffer[self.command_cursor..].chars().next() {
+                    self.command_cursor += ch.len_utf8();
+                }
+                None
+            }
+            KeyCode::Home => {
+                self.command_cursor = 0;
+                None
+            }
+            KeyCode::End => {
+                self.command_cursor = self.command_buffer.len();
+                None
+            }
+            KeyCode::Delete => {
+                if self.command_cursor < self.command_buffer.len() {
+                    self.command_buffer.remove(self.command_cursor);
+                }
+                None
+            }
+            KeyCode::Char('u')
+                if key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+            {
+                self.command_buffer.drain(..self.command_cursor);
+                self.command_cursor = 0;
+                None
+            }
+            KeyCode::Char('k')
+                if key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+            {
+                self.command_buffer.truncate(self.command_cursor);
+                None
+            }
             KeyCode::Enter => {
                 let command = self.command_buffer.trim().to_string();
                 if !command.is_empty() && self.command_history.last() != Some(&command) {
@@ -262,6 +328,7 @@ impl InputContext {
             }
             KeyCode::Tab => {
                 self.tab_complete();
+                self.command_cursor = self.command_buffer.len();
                 None
             }
             KeyCode::Char(ch) => {

@@ -37,7 +37,7 @@ pub struct Collection {
     pub more: bool,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Address {
     /// Stable primary-key identities of all ancestor rows, including this row.
     pub rows: Vec<String>,

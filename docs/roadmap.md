@@ -8,15 +8,15 @@ This targets a usable end-to-end application rather than every feature of Ultorg
   formula columns/aggregates, undo/redo, saved views, seeded development database.
 - [x] Browse beyond the first result window: independent per-record collection
   pagination, next/previous/load-more, explicit range indicators, lazy folded children.
-- [ ] Direct manipulation: contextual filter/formula entry, field ordering and widths,
+- [x] Direct manipulation: contextual filter/formula entry, field ordering and widths,
   full-value inspector, scrolling help, schema/query/SQL inspection.
-- [ ] Export results: nested JSON and rectangular CSV with explicit loaded-result scope.
-- [ ] Saved workspaces: multiple views, selection/scroll restoration, close/duplicate
+- [x] Export results: nested JSON and rectangular CSV with explicit loaded-result scope.
+- [x] Saved workspaces: multiple views, selection/scroll restoration, close/duplicate
   views, atomic session save/load and startup option.
-- [ ] Connection support: certificate-verified TLS, reconnect/catalog refresh,
+- [x] Connection support: certificate-verified TLS, reconnect/catalog refresh,
   useful connection errors and documented configuration.
-- [ ] Database editing scope pending user preference: staged changes with review,
-  explicit apply/discard, transactions and stale-row protection if included.
+- [ ] Database editing: staged changes with review,
+  explicit apply/discard, transactions and stale-row protection.
 - [ ] Final keyboard/terminal acceptance workflow, real PostgreSQL regression tests,
   documentation, clean commits and no known blockers in the above workflows.
 

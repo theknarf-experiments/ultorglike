@@ -1,6 +1,7 @@
 use crate::{catalog::discover, query::compile, Catalog, Query, Result};
 use data_model::document::{Collection, Document, Record};
-use postgres::{Client, NoTls};
+use postgres::Client;
+use postgres_native_tls::MakeTlsConnector;
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -11,10 +12,25 @@ use std::{
 
 pub const DEFAULT_URL: &str = "postgresql://ultorg:ultorg@localhost:55432/ultorg";
 
+pub fn tls_connector() -> Result<MakeTlsConnector> {
+    let mut builder = native_tls::TlsConnector::builder();
+    if let Some(path) = std::env::var_os("PGSSLROOTCERT") {
+        let pem = std::fs::read(path)
+            .map_err(|e| crate::Error::Invalid(format!("Cannot read PGSSLROOTCERT: {e}")))?;
+        let certificate = native_tls::Certificate::from_pem(&pem)
+            .map_err(|e| crate::Error::Invalid(format!("Invalid PGSSLROOTCERT: {e}")))?;
+        builder.add_root_certificate(certificate);
+    }
+    builder
+        .build()
+        .map(MakeTlsConnector::new)
+        .map_err(|e| crate::Error::Invalid(format!("TLS initialization failed: {e}")))
+}
+
 pub fn connect(url: &str) -> Result<Client> {
     let mut config: postgres::Config = url.parse()?;
     config.connect_timeout(Duration::from_secs(5));
-    let mut client = config.connect(NoTls)?;
+    let mut client = config.connect(tls_connector()?)?;
     client.batch_execute(
         "SET statement_timeout='10s'; SET default_transaction_read_only=on; SET timezone='UTC'",
     )?;
@@ -105,7 +121,9 @@ impl Worker {
             if let Some(token) = running.token.lock().unwrap().take() {
                 // Each request owns a distinct connection: cancellation cannot hit a newer query.
                 std::thread::spawn(move || {
-                    let _ = token.cancel_query(NoTls);
+                    if let Ok(tls) = tls_connector() {
+                        let _ = token.cancel_query(tls);
+                    }
                 });
             }
         }
@@ -142,7 +160,16 @@ impl Worker {
                 crate::Error::Postgres(error) => error
                     .as_db_error()
                     .map(|db| db.message().to_string())
-                    .unwrap_or_else(|| error.to_string()),
+                    .unwrap_or_else(|| {
+                        use std::error::Error;
+                        let mut message = error.to_string();
+                        let mut source = error.source();
+                        while let Some(cause) = source {
+                            message.push_str(&format!(": {cause}"));
+                            source = cause.source();
+                        }
+                        message
+                    }),
                 _ => e.to_string(),
             });
             let _ = tx.send((generation, result));

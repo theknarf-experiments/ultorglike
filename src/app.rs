@@ -1,3 +1,5 @@
+mod session;
+mod workbench;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use data_model::document::{Address, Document, Grid};
 use query_engine::{
@@ -5,6 +7,7 @@ use query_engine::{
     Catalog, Filter, Formula, Operator, Page, Query, Relationship, Sort,
 };
 use tui_input::{InputContext, Mode};
+pub use workbench::Panel;
 
 #[derive(Clone)]
 pub enum Choice {
@@ -39,6 +42,7 @@ pub struct App {
     pub viewport_width: usize,
     pub viewport_height: usize,
     pub picker: Option<Picker>,
+    pub panel: Option<Panel>,
     pub message: String,
     pub busy: bool,
     pub error: bool,
@@ -50,11 +54,28 @@ pub struct App {
     redo: Vec<Query>,
     worker: Option<Worker>,
     initial_view: Option<String>,
+    pub initial_session: Option<String>,
+    view_states: std::collections::BTreeMap<usize, session::ViewState>,
+    pending_position: Option<session::ViewState>,
 }
 impl App {
     pub fn new(url: Option<String>, initial_view: Option<String>) -> Self {
         let mut input = InputContext::new();
         for name in [
+            "inspect",
+            "query",
+            "sql",
+            "schema",
+            "export",
+            "width",
+            "move",
+            "formula_prompt",
+            "session_save",
+            "session_load",
+            "close",
+            "duplicate",
+            "views",
+            "reconnect",
             "quit",
             "help",
             "tables",
@@ -106,6 +127,7 @@ impl App {
             viewport_width: 80,
             viewport_height: 20,
             picker: None,
+            panel: None,
             message: if busy {
                 "Connecting to PostgreSQL…".into()
             } else {
@@ -121,6 +143,9 @@ impl App {
             redo: vec![],
             worker,
             initial_view,
+            initial_session: None,
+            view_states: Default::default(),
+            pending_position: None,
         }
     }
     pub fn poll(&mut self) {
@@ -133,8 +158,17 @@ impl App {
                 )),
                 Ok(Response::Catalog(catalog)) => {
                     self.catalog = catalog;
-                    if let Some(path) = self.initial_view.take() {
+                    if let Some(path) = self.initial_session.take() {
+                        self.handle_command(&format!("session_load {path}"));
+                    } else if let Some(path) = self.initial_view.take() {
                         self.handle_command(&format!("load {path}"));
+                    } else if let Some(query) = &self.query {
+                        match query.validate(&self.catalog) {
+                            Ok(()) => self.refresh(),
+                            Err(error) => {
+                                self.fail(format!("Schema changed: {error}. Open a table with t."))
+                            }
+                        }
                     } else if let Some(index) = self
                         .catalog
                         .tables
@@ -155,6 +189,7 @@ impl App {
                     let address = self.address();
                     self.document = document;
                     self.rebuild(address);
+                    self.restore_position();
                     self.error = false;
                     self.message = if self.document.truncated {
                         format!(
@@ -256,6 +291,13 @@ impl App {
     }
     fn rebuild(&mut self, address: Option<Address>) {
         self.grid = Grid::build(&self.document);
+        if let Some(query) = &self.query {
+            for (index, id) in self.grid.leaves.iter().enumerate() {
+                if let Some(width) = query.widths.get(id) {
+                    self.grid.widths[index] = *width;
+                }
+            }
+        }
         if let Some(address) = address {
             if let Some(cell) = self.grid.cells.iter().find(|c| c.address == address) {
                 self.column = cell.column;
@@ -327,6 +369,9 @@ impl App {
             Ok(()) => {
                 if next != old {
                     self.undo.push(old);
+                    if self.undo.len() > 100 {
+                        self.undo.remove(0);
+                    }
                     self.redo.clear();
                     self.query = Some(next);
                     self.error = false;
@@ -336,10 +381,15 @@ impl App {
         }
     }
     fn open_table(&mut self, index: usize) {
+        if self.views.len() >= 100 {
+            self.fail("Close a view before opening more (maximum 100)");
+            return;
+        }
         let Some(table) = self.catalog.tables.get(index) else {
             return;
         };
         let query = Query::new(table);
+        self.stash_view();
         if let Some(old) = self.query.take() {
             if let Some(slot) = self.views.get_mut(self.active_view) {
                 *slot = old;
@@ -363,13 +413,16 @@ impl App {
             self.fail("No such view");
             return;
         }
+        self.stash_view();
         if let Some(query) = self.query.take() {
             self.views[self.active_view] = query;
         }
         self.active_view = index;
         self.query = Some(self.views[index].clone());
-        self.undo.clear();
-        self.redo.clear();
+        let state = self.view_states.get(&index).cloned().unwrap_or_default();
+        self.undo = state.undo.clone();
+        self.redo = state.redo.clone();
+        self.pending_position = Some(state);
         self.document = Document::default();
         self.column = 0;
         self.y = 0;
@@ -377,6 +430,7 @@ impl App {
     }
     fn close_popup(&mut self) {
         self.picker = None;
+        self.panel = None;
         self.input.set_mode(Mode::Normal);
     }
     fn show_picker(&mut self, node: Option<u64>) {
@@ -601,6 +655,10 @@ impl App {
             }
             return;
         }
+        if self.panel.is_some() {
+            self.panel_key(key);
+            return;
+        }
         if self.input.mode() == &Mode::Help {
             if matches!(
                 key.code,
@@ -735,9 +793,18 @@ impl App {
         let optional = if arg.is_empty() { None } else { Some(arg) };
         let count = self.count.parse::<usize>().unwrap_or(1);
         self.count.clear();
+        if self.session_command(action, arg)? {
+            return Ok(());
+        }
+        if self.workbench_command(action, arg)? {
+            return Ok(());
+        }
         match action {
             "q" | "quit" => self.should_quit = true,
-            "help" | "?" => self.input.set_mode(Mode::Help),
+            "help" | "?" => {
+                self.open_panel("Help", crate::ui::HELP.into());
+                self.input.set_mode(Mode::Help);
+            }
             "escape" => {
                 if self.busy {
                     if let Some(worker) = &mut self.worker {
@@ -1024,23 +1091,27 @@ impl App {
                 });
             }
             "refresh" => self.refresh(),
+            "reconnect" => {
+                if let Some(worker) = &mut self.worker {
+                    worker.submit(None);
+                    self.busy = true;
+                    self.message = "Refreshing connection and schema…".into();
+                }
+            }
             "save" => {
                 let path = std::path::Path::new(optional.unwrap_or("views/default.json"));
                 let query = self.query.as_ref().ok_or("Open a table first")?;
-                if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-                    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-                }
-                let temporary = path.with_extension("json.tmp");
-                std::fs::write(
-                    &temporary,
-                    serde_json::to_vec_pretty(query).map_err(|e| e.to_string())?,
-                )
-                .map_err(|e| e.to_string())?;
-                std::fs::rename(temporary, path).map_err(|e| e.to_string())?;
+                workbench::atomic_write(
+                    path,
+                    &serde_json::to_vec_pretty(query).map_err(|e| e.to_string())?,
+                )?;
                 self.message = format!("Saved {}", path.display());
                 self.error = false;
             }
             "load" => {
+                if self.views.len() >= 100 {
+                    return Err("Close a view before opening more (maximum 100)".into());
+                }
                 let path = optional.unwrap_or("views/default.json");
                 if std::fs::metadata(path).map_err(|e| e.to_string())?.len() > 1_000_000 {
                     return Err("View file is too large".into());
@@ -1049,6 +1120,7 @@ impl App {
                     serde_json::from_slice(&std::fs::read(path).map_err(|e| e.to_string())?)
                         .map_err(|e| e.to_string())?;
                 query.validate(&self.catalog).map_err(|e| e.to_string())?;
+                self.stash_view();
                 if let Some(old) = self.query.take() {
                     self.views[self.active_view] = old;
                 }

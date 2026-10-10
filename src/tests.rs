@@ -246,3 +246,108 @@ fn formula_commands_picker_undo_and_persistence() {
     std::fs::remove_file(path).unwrap();
     assert!(app.grid.headings.iter().any(|h| h.label.contains('ƒ')));
 }
+
+#[test]
+fn inspectors_layout_exports_and_unicode_command_editing() {
+    let mut app = app();
+    command(&mut app, "show id");
+    command(&mut app, "move id 1");
+    command(&mut app, "width name 27");
+    assert_eq!(app.query.as_ref().unwrap().root.columns, ["id", "name"]);
+    assert_eq!(app.grid.widths[1], 27);
+    let name = "東京, \"shop\"\nsecond line";
+    app.document.rows = vec![Record {
+        key: "[\"1\"]".into(),
+        values: [
+            ("1:id".into(), Some("1".into())),
+            ("1:name".into(), Some(name.into())),
+        ]
+        .into(),
+        children: Default::default(),
+    }];
+    app.grid = data_model::document::Grid::build(&app.document);
+    app.column = 1;
+    type_keys(&mut app, "K");
+    assert!(app.panel.as_ref().unwrap().text.contains(name));
+    type_keys(&mut app, "j");
+    assert_eq!(app.panel.as_ref().unwrap().y, 1);
+    type_keys(&mut app, "q");
+    for action in ["query", "schema", "sql", "help"] {
+        command(&mut app, action);
+        assert!(app.panel.is_some(), "{action}");
+        let mut terminal = Terminal::new(TestBackend::new(30, 10)).unwrap();
+        terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
+        key(&mut app, KeyCode::Esc);
+    }
+    let dir = std::env::temp_dir().join(format!("ultorg-export-{}", std::process::id()));
+    command(
+        &mut app,
+        &format!("export json {}", dir.join("data.json").display()),
+    );
+    assert!(!app.error, "{}", app.message);
+    let json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.join("data.json")).unwrap()).unwrap();
+    assert_eq!(json["rows"][0]["fields"]["name"], name);
+    command(
+        &mut app,
+        &format!("export csv {}", dir.join("data.csv").display()),
+    );
+    let csv = std::fs::read_to_string(dir.join("data.csv")).unwrap();
+    assert!(csv.contains("\"東京, \"\"shop\"\"\nsecond line\""));
+    std::fs::remove_dir_all(dir).unwrap();
+    type_keys(&mut app, ":a東京b");
+    key(&mut app, KeyCode::Left);
+    key(&mut app, KeyCode::Backspace);
+    type_keys(&mut app, "京");
+    assert_eq!(app.input.command_buffer(), "a東京b");
+    key(&mut app, KeyCode::Home);
+    key(&mut app, KeyCode::Delete);
+    assert_eq!(app.input.command_buffer(), "東京b");
+}
+
+#[test]
+fn workspace_roundtrip_preserves_views_layout_pages_and_undo() {
+    let mut app = app();
+    command(&mut app, "show id");
+    command(&mut app, "width name 31");
+    command(&mut app, "duplicate");
+    assert_eq!(app.views.len(), 2);
+    command(&mut app, "hide id");
+    command(&mut app, "view 1");
+    assert!(app
+        .query
+        .as_ref()
+        .unwrap()
+        .root
+        .columns
+        .contains(&"id".into()));
+    command(&mut app, "undo");
+    assert!(
+        app.query.as_ref().unwrap().widths.is_empty(),
+        "Undo history belongs to each view"
+    );
+    command(&mut app, "redo");
+    app.query.as_mut().unwrap().pages.push(query_engine::Page {
+        node: 1,
+        parents: vec![],
+        offset: 100,
+        limit: 100,
+    });
+    let file = std::env::temp_dir().join(format!("ultorg-session-{}.json", std::process::id()));
+    command(&mut app, &format!("session_save {}", file.display()));
+    assert!(!app.error, "{}", app.message);
+    command(&mut app, "close");
+    assert_eq!(app.views.len(), 1);
+    command(&mut app, &format!("session_load {}", file.display()));
+    assert!(!app.error, "{}", app.message);
+    assert_eq!(app.views.len(), 2);
+    assert_eq!(app.active_view, 0);
+    assert_eq!(app.query.as_ref().unwrap().pages[0].offset, 100);
+    assert_eq!(app.query.as_ref().unwrap().widths["1:name"], 31);
+    let before = app.query.clone();
+    std::fs::write(&file, "{\"version\":999,\"active\":0,\"views\":[]}").unwrap();
+    command(&mut app, &format!("session_load {}", file.display()));
+    assert!(app.error);
+    assert_eq!(app.query, before);
+    std::fs::remove_file(file).unwrap();
+}

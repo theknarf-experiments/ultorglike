@@ -8,7 +8,7 @@ use ratatui::{
 use tui_input::Mode;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-pub const HELP:&str="NAVIGATION\nh j k l / arrows: move cells     10j: count     gg / G: first / last\nCtrl-d / Ctrl-u: half page       0 / $: first / last column\n/ search loaded values          n / N: next / previous match\nEnter / zo: expand              zc: collapse     za: toggle\n\nQUERY\nt: tables   f: fields & relationships   s / S: sort asc / desc   F: filter\nx: hide field   u: undo   Ctrl-r: redo   gt / gT: switch views\nPicker: j/k select, / search, Enter toggle, Tab enter child, Esc close\n:filter orders.status = Shipped      :unfilter orders.status\n:match orders  (require matching children)   :keep orders (keep parents)\n:show orders.freight   :sort_desc orders.order_date   :unsort field\n:join orders customers   :fields customers.orders   :open customers\n:save views/customers.json    :load views/customers.json    :view 2\n:formula orders.line_items.amount = [quantity] * [unit_price]\n:formula orders.total = sum([line_items.amount]) + [freight]\n:unformula orders.total   (remove formula; x only hides it)\n]p / [p: next / previous collection page   +: load more\n:limit 200    :refresh    :help    :quit\n\nEsc cancels input/popups or a running query. q closes help; q quits browsing.\nFilters affect children by default; :match propagates matching to the root.\nData is read-only. Saved views contain query settings, not credentials.";
+pub const HELP:&str="NAVIGATION\nh j k l / arrows: move cells     10j: count     gg / G: first / last\nCtrl-d / Ctrl-u: half page       0 / $: first / last column\n/ search loaded values          n / N: next / previous match\nEnter / zo: expand              zc: collapse     za: toggle\n\nQUERY\nt: tables   f: fields & relationships   s / S: sort asc / desc   F: filter\nK: full value   =: formula editor   ]w / [w: widen / narrow\nx: hide field   u: undo   Ctrl-r: redo   gt / gT: switch views\nPicker: j/k select, / search, Enter toggle, Tab enter child, Esc close\n:filter orders.status = Shipped      :unfilter orders.status\n:match orders  (require matching children)   :keep orders (keep parents)\n:show orders.freight   :sort_desc orders.order_date   :unsort field\n:join orders customers   :fields customers.orders   :open customers\n:save views/customers.json    :load views/customers.json    :view 2\n:formula orders.line_items.amount = [quantity] * [unit_price]\n:formula orders.total = sum([line_items.amount]) + [freight]\n:unformula orders.total   (remove formula; x only hides it)\n]p / [p: next / previous collection page   +: load more\n:limit 200    :refresh    :help    :quit\n\n:query / :sql / :schema: inspect query, SQL, or table\n:session_save workspace.json   :session_load workspace.json\n:views   :duplicate   :close   :reconnect\n:move orders.total 1   :width orders.total 24\n:export json results.json   :export csv results.csv (loaded grid)\nEsc cancels input/popups or a running query. q closes help; q quits browsing.\nFilters affect children by default; :match propagates matching to the root.\nData is read-only. Saved views contain query settings, not credentials.";
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
@@ -112,9 +112,18 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Mode::Other(s) if s == "search" => format!("/{}", app.search),
         _ => " : command   / search   Enter expand   zc collapse   u undo".into(),
     };
-    line(
+    let cursor = if matches!(app.input.mode(), Mode::Command(_)) {
+        1 + app.input.command_buffer()[..app.input.command_cursor()].width()
+    } else {
+        prompt.width()
+    };
+    let skip = cursor.saturating_sub(area.width.saturating_sub(2) as usize);
+    clipped(
         frame,
         Rect::new(0, area.height - 1, area.width, 1),
+        0,
+        skip,
+        prompt.width() + 1,
         &prompt,
         Style::default().fg(Color::Yellow),
     );
@@ -122,21 +131,33 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         || app.input.mode() == &Mode::Other("search".into())
     {
         frame.set_cursor_position((
-            prompt.width().min(area.width.saturating_sub(1) as usize) as u16,
+            (cursor - skip).min(area.width.saturating_sub(1) as usize) as u16,
             area.height - 1,
         ));
     }
-    if app.input.mode() == &Mode::Help {
-        let popup = popup(area, 100, (HELP.lines().count() + 2) as u16);
-        frame.render_widget(Clear, popup);
+    if let Some(panel) = &app.panel {
+        let rect = popup(
+            area,
+            area.width.saturating_sub(2),
+            area.height.saturating_sub(2),
+        );
+        frame.render_widget(Clear, rect);
         frame.render_widget(
-            Paragraph::new(HELP).block(
-                Block::default()
-                    .title(" Help · q / Esc to close ")
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Cyan)),
-            ),
-            popup,
+            Paragraph::new(panel.text.as_str())
+                .scroll((
+                    panel.y.min(u16::MAX as usize) as u16,
+                    panel.x.min(u16::MAX as usize) as u16,
+                ))
+                .block(
+                    Block::default()
+                        .title(format!(
+                            " {} · hjkl scroll · g/G ends · q/Esc close ",
+                            panel.title
+                        ))
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::Cyan)),
+                ),
+            rect,
         );
     }
     if let Some(picker) = &app.picker {
