@@ -1,0 +1,9 @@
+[package]
+name = "tui-input"
+version = "0.1.0"
+edition = "2021"
+description = "Reusable vim-like input handling with mode support and leader key for Rust TUI apps"
+license = "MIT"
+
+[dependencies]
+crossterm = { version = "0.28", features = ["event-stream"] }

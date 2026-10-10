@@ -1,0 +1,15 @@
+[package]
+name = "ultorglike"
+version = "0.1.0"
+edition = "2021"
+description = "A TUI app demonstrating reusable vim-like input handling"
+
+[dependencies]
+tui-input = { path = "crates/tui-input" }
+tui-widgets = { path = "crates/tui-widgets" }
+ratatui = "0.29"
+crossterm = "0.28"
+
+[workspace]
+members = ["crates/tui-input", "crates/tui-widgets", "."]
+resolver = "2"
