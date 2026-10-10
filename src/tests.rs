@@ -178,3 +178,70 @@ fn saves_and_reopens_queries_without_credentials() {
     assert!(!std::fs::read_to_string(&path).unwrap().contains("password"));
     std::fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn formula_commands_picker_undo_and_persistence() {
+    let mut app = app();
+    for table in &mut app.catalog.tables {
+        for col in &mut table.columns {
+            if col.name == "id" {
+                col.data_type = "integer".into();
+            }
+        }
+    }
+    for text in [
+        "join orders customers",
+        "formula orders.amount = [id] * 1.25",
+        "formula total = sum([orders.amount])",
+        "sort_desc total",
+        "filter total > 100",
+        "hide orders.amount",
+    ] {
+        command(&mut app, text);
+        assert!(!app.error, "{}: {}", text, app.message);
+    }
+    let saved = app.query.clone();
+    command(&mut app, "formula orders.amount = [id] * 2");
+    assert_ne!(app.query, saved);
+    type_keys(&mut app, "u");
+    assert_eq!(app.query, saved);
+    command(&mut app, "redo");
+    assert_ne!(app.query, saved);
+    command(&mut app, "undo");
+    for invalid in [
+        "formula orders.amount = [missing]",
+        "formula total = [total]",
+        "unformula orders.amount",
+        "formula name = 1",
+    ] {
+        command(&mut app, invalid);
+        assert!(app.error, "{invalid}");
+        assert_eq!(app.query, saved);
+    }
+    command(&mut app, "fields orders");
+    type_keys(&mut app, "/amount");
+    key(&mut app, KeyCode::Enter);
+    let picker = app.picker.as_ref().unwrap();
+    assert_eq!(picker.entries.len(), 1);
+    assert!(picker.entries[0]
+        .label
+        .contains("[ ] ƒ amount = [id] * 1.25"));
+    // Toggle hidden formula without removing its definition or downstream dependencies.
+    key(&mut app, KeyCode::Enter);
+    key(&mut app, KeyCode::Esc);
+    assert!(app.query.as_ref().unwrap().root.children[0]
+        .columns
+        .contains(&"amount".into()));
+    let path =
+        std::env::temp_dir().join(format!("ultorglike-formulas-{}.json", std::process::id()));
+    command(&mut app, &format!("save {}", path.display()));
+    let saved = app.query.clone();
+    command(&mut app, "unformula total");
+    assert!(!app.error, "{}", app.message);
+    assert!(app.query.as_ref().unwrap().root.sort.is_empty());
+    assert!(app.query.as_ref().unwrap().root.filters.is_empty());
+    command(&mut app, &format!("load {}", path.display()));
+    assert_eq!(app.query, saved);
+    std::fs::remove_file(path).unwrap();
+    assert!(app.grid.headings.iter().any(|h| h.label.contains('ƒ')));
+}

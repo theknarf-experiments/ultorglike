@@ -1,4 +1,8 @@
-use crate::{schema::*, Error, Result};
+use crate::{
+    expression::{self, Expr},
+    schema::*,
+    Error, Result,
+};
 use data_model::document::Field;
 use serde::{Deserialize, Serialize};
 
@@ -15,6 +19,8 @@ pub struct Node {
     pub table: TableName,
     pub label: String,
     pub columns: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub formulas: Vec<Formula>,
     pub children: Vec<Node>,
     pub join: Option<Relationship>,
     pub expanded: bool,
@@ -22,6 +28,12 @@ pub struct Node {
     pub require_match: bool,
     pub filters: Vec<Filter>,
     pub sort: Vec<Sort>,
+}
+/// A numeric expression scoped to one relation. Visibility lives in `Node::columns`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Formula {
+    pub name: String,
+    pub expression: String,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Sort {
@@ -88,6 +100,7 @@ impl Node {
             table: table.name.clone(),
             label: table.name.name.clone(),
             columns,
+            formulas: vec![],
             children: vec![],
             join: None,
             expanded: true,
@@ -128,6 +141,9 @@ impl Node {
             .iter()
             .map(|name| {
                 let mut label = name.clone();
+                if self.formulas.iter().any(|f| &f.name == name) {
+                    label.push_str(" ƒ");
+                }
                 if self.filters.iter().any(|f| &f.column == name) {
                     label.push_str(" [f]");
                 }
@@ -247,13 +263,34 @@ impl Query {
             let table = catalog.table(&node.table).ok_or_else(|| {
                 Error::Invalid(format!("Table {} not found", node.table.qualified()))
             })?;
+            if node.formulas.len() > 32 {
+                return Err(Error::Invalid("At most 32 formulas per relation".into()));
+            }
+            let mut names = std::collections::HashSet::new();
+            for formula in &node.formulas {
+                if formula.name.is_empty()
+                    || formula.name.len() > 64
+                    || !formula.name.chars().enumerate().all(|(i, c)| {
+                        c == '_' || c.is_ascii_alphabetic() || (i > 0 && c.is_ascii_digit())
+                    })
+                {
+                    return Err(Error::Invalid("Formula names must be identifiers (letters, digits, underscores; maximum 64 bytes)".into()));
+                }
+                if table.columns.iter().any(|c| c.name == formula.name)
+                    || !names.insert(&formula.name)
+                {
+                    return Err(Error::Invalid(format!("Duplicate field {}", formula.name)));
+                }
+            }
             for col in node
                 .columns
                 .iter()
                 .chain(node.filters.iter().map(|f| &f.column))
                 .chain(node.sort.iter().map(|s| &s.column))
             {
-                if !table.columns.iter().any(|c| &c.name == col) {
+                if !table.columns.iter().any(|c| &c.name == col)
+                    && !node.formulas.iter().any(|f| &f.name == col)
+                {
                     return Err(Error::Invalid(format!("Unknown column {col}")));
                 }
             }
@@ -281,7 +318,17 @@ impl Query {
         if ids.iter().any(|id| *id >= self.next_id) {
             return Err(Error::Invalid("Invalid next field ID".into()));
         }
-        Ok(())
+        // Validate even hidden formulas, including type errors and dependency cycles.
+        fn formulas(node: &Node, compiler: &mut Compiler<'_>) -> Result<()> {
+            for formula in &node.formulas {
+                compiler.field(node, &formula.name, true)?;
+            }
+            for child in &node.children {
+                formulas(child, compiler)?;
+            }
+            Ok(())
+        }
+        formulas(&self.root, &mut Compiler::new(catalog, self.limit))
     }
 }
 
@@ -291,11 +338,7 @@ pub struct Compiled {
 }
 pub fn compile(query: &Query, catalog: &Catalog) -> Result<Compiled> {
     query.validate(catalog)?;
-    let mut compiler = Compiler {
-        catalog,
-        params: vec![],
-        limit: query.limit,
-    };
+    let mut compiler = Compiler::new(catalog, query.limit);
     let sql = compiler.select(&query.root, None)?;
     Ok(Compiled {
         sql,
@@ -306,8 +349,130 @@ struct Compiler<'a> {
     catalog: &'a Catalog,
     params: Vec<String>,
     limit: usize,
+    stack: Vec<(u64, String)>,
+    expansions: usize,
 }
-impl Compiler<'_> {
+impl<'a> Compiler<'a> {
+    fn new(catalog: &'a Catalog, limit: usize) -> Self {
+        Self {
+            catalog,
+            params: vec![],
+            limit,
+            stack: vec![],
+            expansions: 0,
+        }
+    }
+    fn field(&mut self, node: &Node, name: &str, numeric: bool) -> Result<String> {
+        self.expansions += 1;
+        if self.expansions > 10_000 || self.stack.len() >= 64 {
+            return Err(Error::Invalid(
+                "Formula dependency expansion is too large".into(),
+            ));
+        }
+        if let Some(formula) = node.formulas.iter().find(|f| f.name == name) {
+            let key = (node.id, name.to_string());
+            if self.stack.contains(&key) {
+                return Err(Error::Invalid(format!(
+                    "Circular formula dependency: {}.{name}",
+                    node.label
+                )));
+            }
+            self.stack.push(key);
+            let result = expression::parse(&formula.expression)
+                .and_then(|expr| self.expression(node, &expr));
+            self.stack.pop();
+            return result
+                .map_err(|e| Error::Invalid(format!("Formula {}.{name}: {e}", node.label)));
+        }
+        let column = self
+            .catalog
+            .table(&node.table)
+            .and_then(|t| t.columns.iter().find(|c| c.name == name))
+            .ok_or_else(|| {
+                Error::Invalid(format!(
+                    "Unknown field {}.{name}; aggregates require an attached child relationship",
+                    node.label
+                ))
+            })?;
+        if numeric
+            && !matches!(
+                column.data_type.as_str(),
+                "smallint" | "integer" | "bigint" | "real" | "double precision" | "numeric"
+            )
+            && !column.data_type.starts_with("numeric(")
+        {
+            return Err(Error::Invalid(format!(
+                "{}.{} is {}, expected a numeric field",
+                node.label, name, column.data_type
+            )));
+        }
+        Ok(format!(
+            "t{}.{}{}",
+            node.id,
+            quote(name),
+            if numeric { "::numeric" } else { "" }
+        ))
+    }
+    fn expression(&mut self, node: &Node, expr: &Expr) -> Result<String> {
+        self.expansions += 1;
+        if self.expansions > 10_000 {
+            return Err(Error::Invalid(
+                "Formula dependency expansion is too large".into(),
+            ));
+        }
+        match expr {
+            Expr::Number(value) => Ok(format!("({value})::numeric")),
+            Expr::Field(name) => self.field(node, name, true),
+            Expr::Negate(inner) => Ok(format!("(-({}))", self.expression(node, inner)?)),
+            Expr::Binary(op, lhs, rhs) => {
+                let lhs = self.expression(node, lhs)?;
+                let rhs = self.expression(node, rhs)?;
+                if *op == '/' {
+                    Ok(format!("(({lhs}) / NULLIF(({rhs}), 0))"))
+                } else {
+                    Ok(format!("(({lhs}) {op} ({rhs}))"))
+                }
+            }
+            Expr::Aggregate { count, path } => {
+                let (relation, column) = match path.split_once('.') {
+                    Some((relation, column)) => (relation, Some(column)),
+                    None if *count => (path.as_str(), None),
+                    None => {
+                        return Err(Error::Invalid(
+                            "Use sum([child.field]) or count([child])".into(),
+                        ))
+                    }
+                };
+                let child = node
+                    .children
+                    .iter()
+                    .find(|n| n.label == relation)
+                    .ok_or_else(|| {
+                        Error::Invalid(format!(
+                            "Unknown child relationship {relation} on {}",
+                            node.label
+                        ))
+                    })?;
+                let value = match column {
+                    Some(column) => self.field(child, column, !count)?,
+                    None => "*".into(),
+                };
+                let conditions = self.conditions(child, Some(node.id))?;
+                // Independent correlated aggregate: no display LIMIT and no sibling multiplication.
+                let aggregate = if *count {
+                    format!("COUNT({value})")
+                } else {
+                    format!("COALESCE(SUM({value}), 0)")
+                };
+                Ok(format!(
+                    "(SELECT {aggregate} FROM {} t{} WHERE {conditions})::numeric",
+                    child.table.sql(),
+                    child.id
+                ))
+            }
+        }
+    }
+
     fn conditions(&mut self, node: &Node, parent: Option<u64>) -> Result<String> {
         let alias = format!("t{}", node.id);
         let mut terms = vec![];
@@ -322,7 +487,7 @@ impl Compiler<'_> {
         }
         let table = self.catalog.table(&node.table).unwrap();
         for filter in &node.filters {
-            let col = format!("{alias}.{}", quote(&filter.column));
+            let col = format!("({})", self.field(node, &filter.column, false)?);
             if filter.op == Operator::IsNull {
                 terms.push(format!("{col} IS NULL"));
                 continue;
@@ -337,12 +502,12 @@ impl Compiler<'_> {
                 terms.push(format!("strpos(lower({col}::text), lower({param})) > 0"));
                 continue;
             }
-            let dt = &table
+            let dt = table
                 .columns
                 .iter()
                 .find(|c| c.name == filter.column)
-                .unwrap()
-                .data_type;
+                .map(|c| c.data_type.as_str())
+                .unwrap_or("numeric");
             let op = match filter.op {
                 Operator::Eq => "=",
                 Operator::Ne => "<>",
@@ -388,13 +553,13 @@ impl Compiler<'_> {
             .columns
             .iter()
             .map(|c| {
-                format!(
-                    "'{}', {alias}.{}::text",
+                Ok(format!(
+                    "'{}', ({})::text",
                     format!("{}:{c}", node.id).replace('\'', "''"),
-                    quote(c)
-                )
+                    self.field(node, c, false)?
+                ))
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>>>()?;
         // PostgreSQL limits function calls to 100 arguments (50 key/value pairs).
         let values = if values.is_empty() {
             "'{}'::jsonb".into()
@@ -415,13 +580,13 @@ impl Compiler<'_> {
             .sort
             .iter()
             .map(|s| {
-                format!(
-                    "{alias}.{} {} NULLS LAST",
-                    quote(&s.column),
+                Ok(format!(
+                    "({}) {} NULLS LAST",
+                    self.field(node, &s.column, false)?,
                     if s.descending { "DESC" } else { "ASC" }
-                )
+                ))
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>>>()?;
         for key in &keys {
             if !node.sort.iter().any(|s| &s.column == key) {
                 let cast = if table.primary_keys.is_empty() {

@@ -2,7 +2,7 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use data_model::document::{Address, Document, Grid};
 use query_engine::{
     executor::{Response, Worker},
-    Catalog, Filter, Operator, Query, Relationship, Sort,
+    Catalog, Filter, Formula, Operator, Query, Relationship, Sort,
 };
 use tui_input::{InputContext, Mode};
 
@@ -61,6 +61,8 @@ impl App {
             "open",
             "fields",
             "join",
+            "formula",
+            "unformula",
             "filter",
             "unfilter",
             "sort",
@@ -365,6 +367,38 @@ impl App {
                             choice: Choice::Field(col.name.clone()),
                         });
                     }
+                }
+                for formula in &node.formulas {
+                    let mark = if node.columns.contains(&formula.name) {
+                        "x"
+                    } else {
+                        " "
+                    };
+                    let filter = node
+                        .filters
+                        .iter()
+                        .find(|f| f.column == formula.name)
+                        .map(|f| format!(" [filter {:?} {}]", f.op, f.value))
+                        .unwrap_or_default();
+                    let sort = node
+                        .sort
+                        .iter()
+                        .find(|s| s.column == formula.name)
+                        .map(|s| {
+                            if s.descending {
+                                " [sort ↓]"
+                            } else {
+                                " [sort ↑]"
+                            }
+                        })
+                        .unwrap_or("");
+                    entries.push(Entry {
+                        label: format!(
+                            "[{mark}] ƒ {} = {}{filter}{sort}",
+                            formula.name, formula.expression
+                        ),
+                        choice: Choice::Field(formula.name.clone()),
+                    });
                 }
                 for rel in self.catalog.relationships(&node.table) {
                     let exists = node.children.iter().any(|c| c.join.as_ref() == Some(&rel));
@@ -761,6 +795,42 @@ impl App {
                         }
                     }
                 }
+            }
+            "formula" => {
+                let (target, expression) = arg
+                    .split_once('=')
+                    .ok_or("Usage: formula orders.total = sum([line_items.amount]) + [freight]")?;
+                let (id, name) = self.field_target(Some(target.trim()))?;
+                let expression = expression.trim().to_string();
+                self.change(|q, _| {
+                    let node = q.root.find_mut(id).ok_or("Unknown relation")?;
+                    if let Some(formula) = node.formulas.iter_mut().find(|f| f.name == name) {
+                        formula.expression = expression;
+                    } else {
+                        node.formulas.push(Formula {
+                            name: name.clone(),
+                            expression,
+                        });
+                    }
+                    if !node.columns.contains(&name) {
+                        node.columns.push(name);
+                    }
+                    Ok(())
+                });
+            }
+            "unformula" => {
+                let (id, name) = self.field_target(optional)?;
+                self.change(|q, _| {
+                    let node = q.root.find_mut(id).ok_or("Unknown relation")?;
+                    if !node.formulas.iter().any(|f| f.name == name) {
+                        return Err("Select a formula to remove".into());
+                    }
+                    node.formulas.retain(|f| f.name != name);
+                    node.columns.retain(|c| c != &name);
+                    node.filters.retain(|f| f.column != name);
+                    node.sort.retain(|s| s.column != name);
+                    Ok(())
+                });
             }
             "hide" | "show" => {
                 let (id, column) = self.field_target(optional)?;

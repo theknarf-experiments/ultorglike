@@ -1,0 +1,152 @@
+{
+  "version": 1,
+  "root": {
+    "id": 1,
+    "table": {
+      "schema": "public",
+      "name": "customers"
+    },
+    "label": "customers",
+    "columns": [
+      "company_name",
+      "total_spend"
+    ],
+    "children": [
+      {
+        "id": 2,
+        "table": {
+          "schema": "public",
+          "name": "orders"
+        },
+        "label": "orders",
+        "columns": [
+          "order_date",
+          "freight",
+          "status",
+          "total",
+          "item_count"
+        ],
+        "children": [
+          {
+            "id": 3,
+            "table": {
+              "schema": "public",
+              "name": "line_items"
+            },
+            "label": "line_items",
+            "columns": [
+              "quantity",
+              "unit_price",
+              "discount",
+              "amount"
+            ],
+            "children": [
+              {
+                "id": 4,
+                "table": {
+                  "schema": "public",
+                  "name": "products"
+                },
+                "label": "products",
+                "columns": [
+                  "name"
+                ],
+                "children": [],
+                "join": {
+                  "constraint": "line_items_product_id_fkey",
+                  "target": {
+                    "schema": "public",
+                    "name": "products"
+                  },
+                  "parent_columns": [
+                    "product_id"
+                  ],
+                  "child_columns": [
+                    "id"
+                  ]
+                },
+                "expanded": true,
+                "require_match": false,
+                "filters": [],
+                "sort": []
+              }
+            ],
+            "join": {
+              "constraint": "line_items_order_id_fkey",
+              "target": {
+                "schema": "public",
+                "name": "line_items"
+              },
+              "parent_columns": [
+                "id"
+              ],
+              "child_columns": [
+                "order_id"
+              ]
+            },
+            "expanded": true,
+            "require_match": false,
+            "filters": [],
+            "sort": [],
+            "formulas": [
+              {
+                "name": "amount",
+                "expression": "[quantity] * [unit_price] * (1 - [discount])"
+              }
+            ]
+          }
+        ],
+        "join": {
+          "constraint": "orders_customer_id_fkey",
+          "target": {
+            "schema": "public",
+            "name": "orders"
+          },
+          "parent_columns": [
+            "id"
+          ],
+          "child_columns": [
+            "customer_id"
+          ]
+        },
+        "expanded": true,
+        "require_match": false,
+        "filters": [],
+        "sort": [
+          {
+            "column": "total",
+            "descending": true
+          }
+        ],
+        "formulas": [
+          {
+            "name": "total",
+            "expression": "sum([line_items.amount]) + [freight]"
+          },
+          {
+            "name": "item_count",
+            "expression": "count([line_items])"
+          }
+        ]
+      }
+    ],
+    "join": null,
+    "expanded": true,
+    "require_match": false,
+    "filters": [],
+    "sort": [
+      {
+        "column": "total_spend",
+        "descending": true
+      }
+    ],
+    "formulas": [
+      {
+        "name": "total_spend",
+        "expression": "sum([orders.total])"
+      }
+    ]
+  },
+  "limit": 100,
+  "next_id": 5
+}

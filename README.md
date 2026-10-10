@@ -48,6 +48,57 @@ Use `u` / `Ctrl-r` to undo/redo query changes. Reopen a saved query with
 `:load views/shipped.json` or `cargo run -- --view views/shipped.json`.
 Saved files contain the query and presentation settings, never connection credentials.
 
+## Formulas and nested totals
+
+Open the ready-made example:
+
+```sh
+cargo run -- --view examples/customer-totals.json
+```
+
+It computes discounted line-item amounts, order totals including freight, item
+counts, and each customer's total spend. Orders and customers sort by their totals.
+To build it from `examples/customers.json`, enter:
+
+```text
+:formula orders.line_items.amount = [quantity] * [unit_price] * (1 - [discount])
+:formula orders.total = sum([line_items.amount]) + [freight]
+:formula orders.item_count = count([line_items])
+:formula customers.total_spend = sum([orders.total])
+:sort_desc orders.total
+:sort_desc customers.total_spend
+:save views/customer-totals.json
+```
+
+`:formula path.name = expression` creates or replaces a formula and shows its column.
+Formula names use letters, digits and underscores, starting with a letter or underscore.
+Headers mark formulas with `ƒ`; the field picker (`f`) shows their expressions and
+can toggle visibility. Use `:hide orders.total` to hide a formula while keeping its
+calculation, or `:unformula orders.total` to remove it and its filters/sorts. Removing
+a formula or relationship still needed by another formula is rejected; hide/fold it
+instead, or remove the dependent formula first. Query changes support undo/redo.
+
+Expressions support decimal literals, parentheses, unary `+`/`-`, and `+ - * /`.
+`[field]` refers to a numeric database column or formula in the same relation,
+including hidden fields. `sum([child.field])` sums a numeric column or formula on an
+attached immediate child relationship. `count([child])` counts rows;
+`count([child.field])` counts non-null values of any type. Chain formulas across
+levels, as in the customer total above. References use the relationship labels
+shown in the view; field names with spaces work inside brackets.
+
+Calculations use PostgreSQL `numeric` arithmetic and preserve decimal precision.
+Null inputs propagate through arithmetic; division by zero returns `NULL`.
+Sums ignore null values and return zero for empty/all-null collections; counts
+return zero for empty collections. Aggregates include **all matching child rows**,
+regardless of `:limit`, visibility, or folding. Child filters and `:match` restrictions
+apply before aggregation. Independent sibling collections never multiply totals.
+Filters and sorts also work on formulas, e.g. `:filter orders.total > 400`.
+
+Formulas are a bounded expression language, not arbitrary SQL: numeric database
+fields, arithmetic, `sum`, and `count` are supported. Text/date functions, explicit
+casts, and direct references across multiple relationship levels are not supported.
+Definitions are saved with the query; existing views without formulas still load.
+
 ## Connect to another database
 
 ```sh
@@ -58,7 +109,7 @@ DATABASE_URL=postgresql://user:password@localhost/database cargo run
 The initial backend supports PostgreSQL connections without TLS. It discovers
 schemas, tables, primary keys, and foreign keys (including composite keys), and
 allows traversing foreign keys in either direction. Connections use read-only
-transactions by default. Database editing and formula evaluation are not implemented.
+transactions by default. Database editing is not implemented. Numeric formulas and aggregates execute in PostgreSQL.
 The unused DataFusion/DuckDB stubs have been replaced by the working PostgreSQL path.
 
 `POSTGRES_PORT=55433 docker compose up -d --wait` overrides the local port; set

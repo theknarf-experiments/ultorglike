@@ -12,7 +12,7 @@ change fields/relationships, filter/sort, undo/redo, and save/reopen views.
 6. Run formatting, workspace tests, clippy, integration tests, and terminal smoke checks.
 
 Use the existing working tree; preserve unrelated edits. No database writes from
-the browser are part of this milestone. Formula evaluation is a later milestone.
+the browser are part of this milestone. The formula milestone follows below.
 
 Validation is repeated by `.github/workflows/ci.yml` and `scripts/check.sh`.
 
@@ -30,4 +30,30 @@ Validation is repeated by `.github/workflows/ci.yml` and `scripts/check.sh`.
   parent matching, undo, help, field picker, folding, and normal shutdown.
 
 The first four milestones are implemented. The fixture database remains available
-through Compose. Formula columns and database editing remain future milestones.
+through Compose. Formula columns are covered by the next milestone below; database editing remains future work.
+
+## Formula milestone
+
+Acceptance: calculate line-item amounts in the seeded customer view, aggregate
+order totals, sort by total, and save/reopen with identical results. Include more
+matching line items than the display limit and an independent sibling collection.
+
+1. Add a bounded numeric expression parser and serialized formula definitions.
+2. Compile formulas and correlated aggregates in PostgreSQL before display limits;
+   validate types, missing dependencies and cycles before changing a view.
+3. Integrate commands, field picker, visibility, filters/sorts, undo/redo and save/load.
+4. Add a runnable totals example and document null, empty collection and division rules.
+5. Verify parsing/rejections, app interactions and real PostgreSQL results, including
+   exact decimals, filters, nested aggregates, limits, empty children and roundtrips.
+6. Run the existing formatting, workspace tests, Clippy and PostgreSQL workflow.
+
+Completed: parser/compiler, commands/picker, saved formulas, and
+`examples/customer-totals.json`. `scripts/check.sh --postgres` passes: 53 tests
+without a database, two doctests, three live PostgreSQL tests, formatting and strict
+Clippy. Live tests verify totals with a one-row display limit, independent sibling
+collections, nested aggregates, numeric sorting, exact decimals, hidden-field and
+formula filters, parent matching, empty/all-null collections and division by zero.
+A PTY smoke run created formulas through keyboard input, sorted totals, limited the
+grid to one row, saved/reopened the view, undid an edit, inspected the picker and
+help, and exited normally. Totals remained 1109.325 for the customer and 497.685
+for the displayed order despite omitted orders and line items.

@@ -223,6 +223,41 @@ fn composite_keys_quoted_identifiers_and_cancellation() {
         result.rows[0].children[&id.to_string()][0].values[&format!("{id}:unit price")].as_deref(),
         Some("12345678901234567890.123")
     );
+    {
+        use query_engine::Formula;
+        let child = q.root.find_mut(id).unwrap();
+        child.formulas = vec![
+            Formula {
+                name: "exact".into(),
+                expression: "[unit price] + .001".into(),
+            },
+            Formula {
+                name: "undefined".into(),
+                expression: "[unit price] / 0".into(),
+            },
+            Formula {
+                name: "null_math".into(),
+                expression: "[undefined] + 1".into(),
+            },
+        ];
+        child
+            .columns
+            .extend(["exact".into(), "undefined".into(), "null_math".into()]);
+        q.root.formulas = vec![Formula {
+            name: "null_sum".into(),
+            expression: "sum([children.null_math])".into(),
+        }];
+        q.root.columns.push("null_sum".into());
+        let result = execute(&mut client, &q, &catalog).unwrap();
+        let values = &result.rows[0].children[&id.to_string()][0].values;
+        assert_eq!(
+            values[&format!("{id}:exact")].as_deref(),
+            Some("12345678901234567890.124")
+        );
+        assert_eq!(values[&format!("{id}:undefined")], None);
+        assert_eq!(values[&format!("{id}:null_math")], None);
+        assert_eq!(result.rows[0].values["1:null_sum"].as_deref(), Some("0"));
+    }
     // New requests remain responsive and actually cancel the previous server query.
     let slow = catalog
         .tables
@@ -280,4 +315,134 @@ fn composite_keys_quoted_identifiers_and_cancellation() {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+#[test]
+#[ignore = "requires seeded PostgreSQL; scripts/check.sh runs this test"]
+fn formula_totals_ignore_display_limits_and_preserve_scope() {
+    use data_model::document::Record;
+    use query_engine::{Formula, Node};
+    fn value<'a>(row: &'a Record, field: &str) -> &'a str {
+        let text = row.values[field]
+            .as_deref()
+            .expect("non-null numeric result");
+        if text.contains('.') {
+            text.trim_end_matches('0').trim_end_matches('.')
+        } else {
+            text
+        }
+    }
+    fn add(node: &mut Node, name: &str, expression: &str) {
+        node.formulas.push(Formula {
+            name: name.into(),
+            expression: expression.into(),
+        });
+        node.columns.push(name.into());
+    }
+    let url = std::env::var("TEST_DATABASE_URL").expect("Set TEST_DATABASE_URL");
+    let mut client = connect(&url).unwrap();
+    let catalog = discover(&mut client).unwrap();
+    let mut query: Query =
+        serde_json::from_str(include_str!("../../../examples/customer-totals.json")).unwrap();
+    // Include independent siblings: contacts must never multiply order totals.
+    let contacts = catalog
+        .relationships(&query.root.table)
+        .into_iter()
+        .find(|r| r.target.name == "contacts")
+        .unwrap();
+    query.add_relationship(1, contacts, &catalog).unwrap();
+    add(&mut query.root, "phone_count", "count([contacts.phone])");
+    add(&mut query.root, "contact_count", "count([contacts])");
+    add(
+        &mut query.root,
+        "contact_ratio",
+        "count([contacts.phone]) / count([contacts])",
+    );
+    query.limit = 1;
+    let limited = execute(&mut client, &query, &catalog).unwrap();
+    assert!(limited.truncated);
+    assert_eq!(limited.rows.len(), 1);
+    let customer = &limited.rows[0];
+    assert_eq!(
+        customer.values["1:company_name"].as_deref(),
+        Some("Familia Arquibaldo")
+    );
+    assert_eq!(value(customer, "1:total_spend"), "1109.325");
+    assert_eq!(value(customer, "1:phone_count"), "1");
+    assert_eq!(value(customer, "1:contact_count"), "2");
+    assert_eq!(value(customer, "1:contact_ratio"), "0.5");
+    assert_eq!(customer.children["2"].len(), 1);
+    let order = &customer.children["2"][0];
+    // Numerically largest order appears first, despite its date and key ordering.
+    assert_eq!(order.key, "[\"102\"]");
+    assert_eq!(value(order, "2:total"), "497.685");
+    assert_eq!(value(order, "2:item_count"), "2");
+    assert_eq!(order.children["3"].len(), 1);
+    assert_eq!(value(&order.children["3"][0], "3:amount"), "220.875");
+    let saved = serde_json::to_string(&query).unwrap();
+    let restored: Query = serde_json::from_str(&saved).unwrap();
+    assert_eq!(
+        execute(&mut client, &restored, &catalog).unwrap().rows,
+        limited.rows
+    );
+    query.limit = 200;
+    let full = execute(&mut client, &query, &catalog).unwrap();
+    assert_eq!(full.rows[0].values, customer.values);
+    assert_eq!(full.rows[0].children["2"].len(), 3);
+    // A customer with an empty order and one with no orders both have zero sums.
+    let empty = full
+        .rows
+        .iter()
+        .find(|r| r.values["1:company_name"].as_deref() == Some("Nordlys Handel"))
+        .unwrap();
+    assert_eq!(value(empty, "1:total_spend"), "0");
+    assert_eq!(value(&empty.children["2"][0], "2:total"), "0");
+    assert_eq!(value(&empty.children["2"][0], "2:item_count"), "0");
+    let no_orders = full
+        .rows
+        .iter()
+        .find(|r| r.values["1:company_name"].as_deref() == Some("No Orders Yet"))
+        .unwrap();
+    assert_eq!(value(no_orders, "1:total_spend"), "0");
+    assert_eq!(
+        no_orders.values["1:contact_ratio"], None,
+        "Division by zero returns NULL"
+    );
+
+    // Aggregation uses child filters even when their source column is hidden.
+    let items = query.root.find_mut(3).unwrap();
+    items.columns.retain(|c| c != "quantity");
+    items.filters.push(Filter {
+        column: "quantity".into(),
+        op: Operator::Gt,
+        value: "20".into(),
+    });
+    let filtered = execute(&mut client, &query, &catalog).unwrap();
+    assert_eq!(value(&filtered.rows[0], "1:total_spend"), "821.525");
+    query.root.find_mut(3).unwrap().require_match = true;
+    let matched = execute(&mut client, &query, &catalog).unwrap();
+    assert_eq!(value(&matched.rows[0], "1:total_spend"), "810.695");
+    query.root.find_mut(3).unwrap().require_match = false;
+    query.root.find_mut(3).unwrap().filters.clear();
+
+    // Filtering an aggregate includes precisely the matching orders in its parent sum.
+    query.root.find_mut(2).unwrap().filters.push(Filter {
+        column: "total".into(),
+        op: Operator::Gt,
+        value: "400".into(),
+    });
+    let filtered = execute(&mut client, &query, &catalog).unwrap();
+    assert_eq!(value(&filtered.rows[0], "1:total_spend"), "497.685");
+    assert_eq!(filtered.rows[0].children["2"].len(), 1);
+    query.root.find_mut(2).unwrap().filters.clear();
+
+    // Filter a calculated child value, then fold its relation; folding preserves calculations.
+    query.root.find_mut(3).unwrap().filters.push(Filter {
+        column: "amount".into(),
+        op: Operator::Gt,
+        value: "200".into(),
+    });
+    query.root.find_mut(3).unwrap().expanded = false;
+    let filtered = execute(&mut client, &query, &catalog).unwrap();
+    assert_eq!(value(&filtered.rows[0], "1:total_spend"), "721.525");
 }

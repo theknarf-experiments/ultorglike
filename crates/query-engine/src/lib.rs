@@ -3,8 +3,9 @@
 pub mod catalog;
 pub mod error;
 pub mod executor;
+pub mod expression;
 pub mod query;
 pub mod schema;
 pub use error::{Error, Result};
-pub use query::{Filter, Node, Operator, Query, Sort};
+pub use query::{Filter, Formula, Node, Operator, Query, Sort};
 pub use schema::{Catalog, Column, ForeignKey, Relationship, TableInfo, TableName};
