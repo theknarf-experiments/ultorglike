@@ -15,12 +15,24 @@ This targets a usable end-to-end application rather than every feature of Ultorg
   views, atomic session save/load and startup option.
 - [x] Connection support: certificate-verified TLS, reconnect/catalog refresh,
   useful connection errors and documented configuration.
-- [ ] Database editing: staged changes with review,
+- [x] Database editing: staged changes with review,
   explicit apply/discard, transactions and stale-row protection.
-- [ ] Final keyboard/terminal acceptance workflow, real PostgreSQL regression tests,
+- [x] Final keyboard/terminal acceptance workflow, real PostgreSQL regression tests,
   documentation, clean commits and no known blockers in the above workflows.
 
 Pagination is a presentation setting and never limits formula aggregates. Field
 selection, filters and relation matching remain inspectable. No saved view or
-workspace contains connection credentials. Database writes, if implemented, require
+workspace contains connection credentials. Database writes require
 an explicit apply action in the product; read-only remains the default connection mode.
+
+## Release validation
+
+Completed locally: 57 tests without a database, two doctests, five PostgreSQL
+integration tests, one TLS fixture test, and the PTY acceptance workflow. Formatting,
+strict Clippy and `git diff --check` pass. GitHub Actions runs the same read/write,
+TLS and terminal workflows; no hosted run is claimed by the local verification.
+
+Start with `docker compose up -d --wait` and
+`cargo run -- --view examples/customer-totals.json`. Add `--editable` to enable
+staging database writes. See README for commands, workspace/export semantics and
+remaining scope limits (PostgreSQL, numeric formulas, loaded-result exports).

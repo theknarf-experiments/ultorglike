@@ -6,9 +6,10 @@ use ratatui::{
     Frame,
 };
 use tui_input::Mode;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
-pub const HELP:&str="NAVIGATION\nh j k l / arrows: move cells     10j: count     gg / G: first / last\nCtrl-d / Ctrl-u: half page       0 / $: first / last column\n/ search loaded values          n / N: next / previous match\nEnter / zo: expand              zc: collapse     za: toggle\n\nQUERY\nt: tables   f: fields & relationships   s / S: sort asc / desc   F: filter\nK: full value   =: formula editor   ]w / [w: widen / narrow\nx: hide field   u: undo   Ctrl-r: redo   gt / gT: switch views\nPicker: j/k select, / search, Enter toggle, Tab enter child, Esc close\n:filter orders.status = Shipped      :unfilter orders.status\n:match orders  (require matching children)   :keep orders (keep parents)\n:show orders.freight   :sort_desc orders.order_date   :unsort field\n:join orders customers   :fields customers.orders   :open customers\n:save views/customers.json    :load views/customers.json    :view 2\n:formula orders.line_items.amount = [quantity] * [unit_price]\n:formula orders.total = sum([line_items.amount]) + [freight]\n:unformula orders.total   (remove formula; x only hides it)\n]p / [p: next / previous collection page   +: load more\n:limit 200    :refresh    :help    :quit\n\n:query / :sql / :schema: inspect query, SQL, or table\n:session_save workspace.json   :session_load workspace.json\n:views   :duplicate   :close   :reconnect\n:move orders.total 1   :width orders.total 24\n:export json results.json   :export csv results.csv (loaded grid)\nEsc cancels input/popups or a running query. q closes help; q quits browsing.\nFilters affect children by default; :match propagates matching to the root.\nData is read-only. Saved views contain query settings, not credentials.";
+pub const HELP:&str="NAVIGATION\nh j k l / arrows: move cells     10j: count     gg / G: first / last\nCtrl-d / Ctrl-u: half page       0 / $: first / last column\n/ search loaded values          n / N: next / previous match\nEnter / zo: expand              zc: collapse     za: toggle\n\nQUERY\nt: tables   f: fields & relationships   s / S: sort asc / desc   F: filter\nK: full value   =: formula editor   ]w / [w: widen / narrow\nx: hide field   u: undo   Ctrl-r: redo   gt / gT: switch views\nPicker: j/k select, / search, Enter toggle, Tab enter child, Esc close\n:filter orders.status = Shipped      :unfilter orders.status\n:match orders  (require matching children)   :keep orders (keep parents)\n:show orders.freight   :sort_desc orders.order_date   :unsort field\n:join orders customers   :fields customers.orders   :open customers\n:save views/customers.json    :load views/customers.json    :view 2\n:formula orders.line_items.amount = [quantity] * [unit_price]\n:formula orders.total = sum([line_items.amount]) + [freight]\n:unformula orders.total   (remove formula; x only hides it)\n]p / [p: next / previous collection page   +: load more\n:limit 200    :refresh    :help    :quit\n\n:query / :sql / :schema: inspect query, SQL, or table\n:session_save workspace.json   :session_load workspace.json\n:views   :duplicate   :close   :reconnect\n:move orders.total 1   :width orders.total 24\n:export json results.json   :export csv results.csv (loaded grid)\nEsc cancels input/popups or a running query. q closes help; q quits browsing.\nFilters affect children by default; :match propagates matching to the root.\nWith --editable: i edit cell · dd stage delete · :insert JSON\n:changes / :apply: review · :apply yes: write · :discard: abandon\nSaved views/workspaces contain queries, not connection credentials.";
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
@@ -24,9 +25,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         frame,
         Rect::new(0, 0, area.width, 1),
         &format!(
-            " ultorglike  {title}   view {}/{}   ? help   t tables   f fields",
+            " ultorglike  {title}   view {}/{}   {} · {} staged   ? help",
             app.active_view + 1,
-            app.views.len()
+            app.views.len(),
+            if app.editable {
+                "EDITABLE"
+            } else {
+                "READ ONLY"
+            },
+            app.edits.len()
         ),
         Style::default().fg(Color::White).bg(Color::Blue),
     );
@@ -332,8 +339,8 @@ fn clipped(
     let mut at = 0;
     let mut used = 0;
     let mut output = String::new();
-    for ch in text.chars() {
-        let w = ch.width().unwrap_or(0);
+    for grapheme in text.graphemes(true) {
+        let w = grapheme.width();
         if w == 0 {
             continue;
         }
@@ -353,7 +360,7 @@ fn clipped(
         if used + w > available {
             break;
         }
-        output.push(ch);
+        output.push_str(grapheme);
         used += w;
         at += w;
     }
@@ -376,4 +383,41 @@ fn popup(area: Rect, width: u16, height: u16) -> Rect {
         width,
         height,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{backend::TestBackend, Terminal};
+    #[test]
+    fn clipping_preserves_graphemes_and_does_not_split_wide_cells() {
+        let mut terminal = Terminal::new(TestBackend::new(10, 2)).unwrap();
+        terminal
+            .draw(|frame| {
+                clipped(
+                    frame,
+                    Rect::new(0, 0, 10, 1),
+                    0,
+                    0,
+                    10,
+                    "e\u{301}東京",
+                    Style::default(),
+                );
+                clipped(
+                    frame,
+                    Rect::new(0, 1, 10, 1),
+                    0,
+                    1,
+                    10,
+                    "東京",
+                    Style::default(),
+                );
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(0, 0)].symbol(), "e\u{301}");
+        assert_eq!(buffer[(1, 0)].symbol(), "東");
+        assert_eq!(buffer[(0, 1)].symbol(), " ");
+        assert_eq!(buffer[(1, 1)].symbol(), "京");
+    }
 }

@@ -179,6 +179,8 @@ impl KeyMap {
             ("F", "filter_prompt"),
             ("=", "formula_prompt"),
             ("K", "inspect"),
+            ("i", "edit_prompt"),
+            ("dd", "delete"),
             ("]w", "wider"),
             ("[w", "narrower"),
             ("f", "fields"),

@@ -30,7 +30,7 @@ Validation is repeated by `.github/workflows/ci.yml` and `scripts/check.sh`.
   parent matching, undo, help, field picker, folding, and normal shutdown.
 
 The first four milestones are implemented. The fixture database remains available
-through Compose. Formula columns are covered by the next milestone below; database editing remains future work.
+through Compose. Formula columns are covered by the next milestone below; subsequent release milestones follow.
 
 ## Formula milestone
 
@@ -57,3 +57,37 @@ A PTY smoke run created formulas through keyboard input, sorted totals, limited 
 grid to one row, saved/reopened the view, undid an edit, inspected the picker and
 help, and exited normally. Totals remained 1109.325 for the customer and 497.685
 for the displayed order despite omitted orders and line items.
+
+## Complete first-release workflow
+
+Release scope is tracked in [roadmap.md](roadmap.md). Following the formula milestone:
+
+1. Added per-record collection paging and load-more with explicit ranges, lazy folded
+   collections, and formula totals independent of collection windows.
+2. Added value/query/schema/SQL panels, scrollable help, Unicode command editing,
+   formula/filter prompts, column ordering/widths, and loaded-result CSV/JSON exports.
+3. Added atomic multi-view workspaces with selection, scroll, paging and per-view
+   query history; startup restoration, duplicate/close/list views, catalog reconnect.
+4. Added certificate-verified TLS with a disposable TLS fixture verifying trusted
+   roots, rejection of untrusted certificates, and rejection of hostname mismatches.
+5. Added opt-in staged insert/update/delete, visible pending-change markers, review,
+   explicit apply/discard, transactional batches and optimistic row-version checks.
+   Disposable-table tests verify parameterization, decimal precision, generated/key
+   field protection, stale/deleted row conflicts and rollback of earlier batch writes.
+6. Added a reproducible PTY acceptance script to CI. It exercises nested page controls,
+   panels, export, tabs, staged CRUD/discard and workspace startup restoration. It
+   creates/deletes one unique fixture customer and cleans up after failures.
+
+Validation commands:
+
+- `scripts/check.sh --postgres`: formatting, workspace tests, strict Clippy and live
+  PostgreSQL read/write integration tests.
+- `scripts/check-tls.sh`: isolated TLS server trust and hostname tests.
+- `cargo build --locked` then Python with `dev/requirements-test.txt` installed running
+  `scripts/smoke.py`: keyboard/terminal acceptance against the local Compose fixture.
+
+The first release remains PostgreSQL-specific. Formulas support numeric arithmetic,
+`sum` and `count`; exports cover loaded windows. Paging uses offsets, so concurrent
+writes can move page boundaries. Editing requires primary keys and uses explicit
+transactional apply; query undo does not undo database writes. These boundaries are
+also described in README and are not claimed as complete Ultorg feature parity.

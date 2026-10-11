@@ -17,6 +17,7 @@ fn fixture() -> (Query, Catalog) {
             name: name.into(),
             data_type: data_type.into(),
             nullable: true,
+            generated: false,
         })
         .collect(),
         primary_keys: vec!["id".into()],

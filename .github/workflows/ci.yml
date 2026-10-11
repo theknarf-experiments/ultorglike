@@ -16,6 +16,12 @@ jobs:
         run: ./scripts/check.sh --postgres
       - name: Verify TLS trust and hostnames
         run: ./scripts/check-tls.sh
+      - name: Keyboard and terminal acceptance workflow
+        run: |
+          cargo build --locked
+          python3 -m venv .venv
+          .venv/bin/pip install -r dev/requirements-test.txt
+          .venv/bin/python scripts/smoke.py
       - name: Database logs on failure
         if: failure()
         run: docker compose logs postgres

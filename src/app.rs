@@ -1,3 +1,4 @@
+mod editing;
 mod session;
 mod workbench;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -43,6 +44,9 @@ pub struct App {
     pub viewport_height: usize,
     pub picker: Option<Picker>,
     pub panel: Option<Panel>,
+    pub editable: bool,
+    pub edits: Vec<query_engine::editing::Change>,
+    applying: Option<std::sync::mpsc::Receiver<Result<usize, String>>>,
     pub message: String,
     pub busy: bool,
     pub error: bool,
@@ -76,6 +80,13 @@ impl App {
             "duplicate",
             "views",
             "reconnect",
+            "edit",
+            "set",
+            "insert",
+            "delete",
+            "changes",
+            "apply",
+            "discard",
             "quit",
             "help",
             "tables",
@@ -128,6 +139,9 @@ impl App {
             viewport_height: 20,
             picker: None,
             panel: None,
+            editable: false,
+            edits: vec![],
+            applying: None,
             message: if busy {
                 "Connecting to PostgreSQL…".into()
             } else {
@@ -149,6 +163,7 @@ impl App {
         }
     }
     pub fn poll(&mut self) {
+        self.poll_edits();
         let response = self.worker.as_mut().and_then(Worker::poll);
         if let Some(response) = response {
             self.busy = false;
@@ -306,6 +321,7 @@ impl App {
                 self.column = col;
             }
         }
+        self.preview_edits();
         self.clamp();
     }
     pub fn clamp(&mut self) {
@@ -647,11 +663,15 @@ impl App {
         if key.kind == KeyEventKind::Release {
             return;
         }
+        if self.applying.is_some() {
+            self.message = "Applying transaction… please wait for the result".into();
+            return;
+        }
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             if self.input.mode() != &Mode::Normal {
                 self.close_popup();
             } else {
-                self.should_quit = true;
+                self.handle_command("quit");
             }
             return;
         }
@@ -793,6 +813,9 @@ impl App {
         let optional = if arg.is_empty() { None } else { Some(arg) };
         let count = self.count.parse::<usize>().unwrap_or(1);
         self.count.clear();
+        if self.edit_command(action, arg)? {
+            return Ok(());
+        }
         if self.session_command(action, arg)? {
             return Ok(());
         }

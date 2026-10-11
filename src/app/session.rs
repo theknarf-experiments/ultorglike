@@ -61,6 +61,9 @@ impl App {
     pub(super) fn session_command(&mut self, action: &str, arg: &str) -> Result<bool, String> {
         match action {
             "session_save" => {
+                if self.busy {
+                    return Err("Wait for the current query before saving the workspace".into());
+                }
                 if arg.is_empty() {
                     return Err("Usage: session_save workspaces/project.json".into());
                 }
@@ -82,10 +85,11 @@ impl App {
                 if session.views.is_empty() {
                     return Err("Open a view first".into());
                 }
-                workbench::atomic_write(
-                    std::path::Path::new(arg),
-                    &serde_json::to_vec_pretty(&session).map_err(|e| e.to_string())?,
-                )?;
+                let bytes = serde_json::to_vec_pretty(&session).map_err(|e| e.to_string())?;
+                if bytes.len() > 10_000_000 {
+                    return Err("Workspace exceeds 10 MB; close unused views before saving".into());
+                }
+                workbench::atomic_write(std::path::Path::new(arg), &bytes)?;
                 self.message = format!("Saved workspace {arg}");
                 self.error = false;
             }

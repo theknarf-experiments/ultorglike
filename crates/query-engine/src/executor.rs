@@ -114,6 +114,26 @@ impl Worker {
             running: None,
         }
     }
+    pub fn apply_changes(
+        &self,
+        catalog: Catalog,
+        changes: Vec<crate::editing::Change>,
+    ) -> mpsc::Receiver<std::result::Result<usize, String>> {
+        let url = self.url.clone();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let result = crate::editing::apply(&url, &catalog, &changes).map_err(|e| {
+                if let crate::Error::Postgres(error) = &e {
+                    if let Some(db) = error.as_db_error() {
+                        return db.message().to_string();
+                    }
+                }
+                e.to_string()
+            });
+            let _ = tx.send(result);
+        });
+        rx
+    }
     pub fn cancel(&mut self) {
         self.generation += 1;
         if let Some(running) = self.running.take() {

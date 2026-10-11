@@ -1,6 +1,6 @@
 # ultorglike
 
-A Rust terminal database browser inspired by Ultorg and Sieuferd. Explore related
+A Rust terminal database workbench inspired by Ultorg and Sieuferd. Explore related
 records in one nested grid, navigate with Vim motions, and build queries by selecting
 fields and relationships. PostgreSQL performs joins, filtering, and sorting.
 
@@ -109,7 +109,7 @@ DATABASE_URL=postgresql://user:password@localhost/database cargo run
 The PostgreSQL backend supports certificate-verified TLS. It discovers
 schemas, tables, primary keys, and foreign keys (including composite keys), and
 allows traversing foreign keys in either direction. Connections use read-only
-transactions by default. Database editing is not implemented. Numeric formulas and aggregates execute in PostgreSQL.
+transactions by default. Database writes are available only with `--editable`; numeric formulas and aggregates execute in PostgreSQL.
 Use `sslmode=require` in the connection URL to require encryption. TLS verifies the
 server certificate and hostname using the system trust store; set `PGSSLROOTCERT`
 to a PEM CA certificate for a private server. The default PostgreSQL `prefer` mode
@@ -137,6 +137,9 @@ TLS uses [postgres-native-tls](https://docs.rs/postgres-native-tls/latest/postgr
 | `F` | Start a filter command for the selected field |
 | `s` / `S` | Sort selected field ascending / descending |
 | `x` | Hide selected field |
+| `K`, `=` | Full-value inspector / formula editor |
+| `]w` / `[w` | Widen / narrow selected column |
+| `i`, `dd` (with `--editable`) | Stage cell edit / row deletion |
 | `u` / `Ctrl-r` | Undo / redo query changes |
 | `gt` / `gT`, `:view 2` | Switch open views |
 | `:` | Command input; Up/Down history, Tab completion |
@@ -209,6 +212,37 @@ side by side as in the grid; this is a presentation export, not a relational joi
 Exports include the currently loaded windows only. JSON preserves explicit nulls
 and is preferable when distinguishing null markers from literal text matters.
 
+## Staged database editing
+
+Start `cargo run -- --editable --view examples/customers.json` to enable editing.
+The default remains read-only. `i` opens the selected cell's value in an editable
+command; `:edit VALUE` or `:set orders.status VALUE` stages a new value. JSON strings
+allow escaped newlines and significant whitespace: `:edit "a\nb"`. Use `:edit null`
+for SQL NULL and `:edit "null"` for literal text. `dd` / `:delete` stages the selected
+record for deletion. Updated cells show `*`; deleted rows show `×`.
+
+`:insert {"id":"200","company_name":"New customer","country":"Norway"}` stages an
+insert into the selected relation's table. Values must be JSON strings or null;
+omitted columns use database defaults. Supply required foreign keys explicitly.
+Use `:schema` to inspect the table first. Inserts are listed in the changes panel
+and appear in the grid after applying, if they match the current query/window.
+
+`:changes` or `:apply` opens a review of pending writes. Close the panel, then use
+`:apply yes` to commit the batch in one transaction. `:discard`, `:discard last`, or
+`:discard N` abandons staged changes. Up to 100 row changes can be staged; multiple
+field updates on the same record are combined. A type, constraint, permission or
+stale-row conflict rolls back the entire batch. Changed/deleted rows are detected
+using the primary key and PostgreSQL row version loaded by the browser. Discard
+and refresh a conflicting row before restaging. Connection errors during commit
+can leave the outcome uncertain; inspect the database before retrying.
+
+Editing requires a primary key. Formula columns, generated columns, and primary-key
+updates are read-only. PostgreSQL permissions and foreign-key rules still apply,
+including delete cascades. Reads stay read-only, even in editable mode. Query undo
+(`u`) does not undo applied database writes. Pending writes are not saved in views
+or workspaces; apply/discard them before exporting, saving/loading a workspace or
+quitting. `:quit!` exits and discards pending local changes.
+
 ## Workspaces
 
 `:duplicate` copies a view, `:close` closes it, and `:views` lists open views.
@@ -234,7 +268,17 @@ Reusable `:save` view files still open at page one; workspace files retain page 
 ./scripts/check-tls.sh         # isolated TLS fixture; trusted/untrusted/hostname checks
 ```
 
-The same workflow runs in [GitHub Actions](.github/workflows/ci.yml). The database
+The same workflow runs in [GitHub Actions](.github/workflows/ci.yml). A keyboard/PTY
+acceptance test also exercises the local Compose fixture (including a temporary
+customer inserted, updated and deleted through the app):
+
+```sh
+python3 -m venv .venv
+.venv/bin/pip install -r dev/requirements-test.txt
+cargo build --locked
+.venv/bin/python scripts/smoke.py
+```
+ The database
 integration test is explicitly ignored by ordinary `cargo test`, so unit tests work
 without Docker. It can also run against an existing seeded fixture:
 
@@ -243,11 +287,12 @@ TEST_DATABASE_URL=postgresql://ultorg:ultorg@localhost:55432/ultorg \
   cargo test -p query-engine --test postgres -- --ignored --test-threads=1
 ```
 
-[Implementation workflow](docs/implementation-workflow.md) records this milestone.
+[Implementation workflow](docs/implementation-workflow.md) records the milestones;
+[release roadmap](docs/roadmap.md) records the completed first-release scope and validation.
 
 | Component | Responsibility |
 | --- | --- |
-| `src/app.rs` | Modal interactions, query editing, history, saved views |
+| `src/app.rs`, `src/app/` | Modal interactions, query editing, workspaces, exports, staged writes |
 | `src/ui.rs` | Ratatui rendering and terminal clipping |
 | `crates/data-model/src/document.rs` | Recursive result document and layout |
 | `crates/data-model/src/from_arrow.rs` | Retained Arrow conversion adapter |

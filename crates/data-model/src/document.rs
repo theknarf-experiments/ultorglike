@@ -6,6 +6,8 @@ use unicode_width::UnicodeWidthStr;
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Record {
     pub key: String,
+    #[serde(default)]
+    pub version: Option<String>,
     pub values: BTreeMap<String, Option<String>>,
     pub children: BTreeMap<String, Vec<Record>>,
 }

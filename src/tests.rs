@@ -16,6 +16,7 @@ fn table(name: &str, cols: &[&str]) -> TableInfo {
                 name: c.to_string(),
                 data_type: "text".into(),
                 nullable: true,
+                generated: false,
             })
             .collect(),
         primary_keys: vec!["id".into()],
@@ -142,6 +143,7 @@ fn navigation_counts_search_and_narrow_terminal() {
     let rows = (0..60)
         .map(|i| Record {
             key: i.to_string(),
+            version: None,
             values: [("1:name".into(), Some(format!("Customer {i}")))].into(),
             children: Default::default(),
         })
@@ -258,6 +260,7 @@ fn inspectors_layout_exports_and_unicode_command_editing() {
     let name = "東京, \"shop\"\nsecond line";
     app.document.rows = vec![Record {
         key: "[\"1\"]".into(),
+        version: Some("1".into()),
         values: [
             ("1:id".into(), Some("1".into())),
             ("1:name".into(), Some(name.into())),
@@ -350,4 +353,54 @@ fn workspace_roundtrip_preserves_views_layout_pages_and_undo() {
     assert!(app.error);
     assert_eq!(app.query, before);
     std::fs::remove_file(file).unwrap();
+}
+
+#[test]
+fn editing_stages_reviews_and_discards_without_writing() {
+    let mut app = app();
+    app.document.rows = vec![Record {
+        key: "[\"1\"]".into(),
+        version: Some("10".into()),
+        values: [("1:name".into(), Some("original".into()))].into(),
+        children: Default::default(),
+    }];
+    app.grid = data_model::document::Grid::build(&app.document);
+    command(&mut app, "edit modified");
+    assert!(app.error && app.edits.is_empty());
+    app.editable = true;
+    app.error = false;
+    type_keys(&mut app, "i");
+    assert_eq!(app.input.command_buffer(), "edit \"original\"");
+    key(&mut app, KeyCode::Esc);
+    command(&mut app, "edit modified");
+    assert!(!app.error, "{}", app.message);
+    assert_eq!(app.edits.len(), 1);
+    assert_eq!(app.grid.cells[0].text, "* modified");
+    assert_eq!(
+        app.document.rows[0].values["1:name"].as_deref(),
+        Some("original")
+    );
+    command(&mut app, "quit");
+    assert!(!app.should_quit);
+    command(&mut app, "changes");
+    assert!(app.panel.as_ref().unwrap().text.contains("modified"));
+    type_keys(&mut app, "q");
+    command(&mut app, "discard");
+    assert!(app.edits.is_empty());
+    assert_eq!(app.grid.cells[0].text, "original");
+    type_keys(&mut app, "dd");
+    assert_eq!(
+        app.edits[0].operation,
+        query_engine::editing::Operation::Delete
+    );
+    assert_eq!(app.grid.cells[0].text, "× original");
+    command(&mut app, "discard last");
+    command(&mut app, "insert {\"id\":\"2\",\"name\":\"new\"}");
+    assert_eq!(
+        app.edits[0].operation,
+        query_engine::editing::Operation::Insert
+    );
+    command(&mut app, "discard");
+    command(&mut app, "quit");
+    assert!(app.should_quit);
 }

@@ -1837,6 +1837,7 @@ dependencies = [
  "serde_json",
  "tui-input",
  "tui-widgets",
+ "unicode-segmentation",
  "unicode-width 0.2.0",
 ]
 

@@ -15,3 +15,6 @@ Thumbs.db
 
 # Cargo lock can be committed for workspaces, but uncomment if you prefer not to:
 # Cargo.lock
+
+# Local Python terminal-test environment
+.venv/

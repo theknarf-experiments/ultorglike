@@ -196,6 +196,14 @@ impl App {
                     )
                 };
                 let (id, column) = self.field_target(target)?;
+                let node = self
+                    .query
+                    .as_ref()
+                    .and_then(|q| q.root.find(id))
+                    .ok_or("Unknown relation")?;
+                if !node.columns.contains(&column) {
+                    return Err("Show a field before resizing it".into());
+                }
                 self.change(|q, _| {
                     q.widths.insert(format!("{id}:{column}"), width);
                     Ok(())

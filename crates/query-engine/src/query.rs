@@ -682,6 +682,11 @@ impl<'a> Compiler<'a> {
                 format!("CASE {} ELSE {} END", limits.join(" "), self.limit + 1),
             )
         };
-        Ok(format!("SELECT jsonb_build_object('key',to_jsonb(ARRAY[{key}]::text[])::text,'values',({values}),'children',jsonb_build_object({})) AS doc, row_number() OVER (ORDER BY {order}) AS ord FROM {} {alias} WHERE {conditions} ORDER BY {order} LIMIT ({limit}) OFFSET ({offset})",children.join(","),node.table.sql()))
+        let version = if table.primary_keys.is_empty() {
+            "NULL".into()
+        } else {
+            format!("{alias}.xmin::text")
+        };
+        Ok(format!("SELECT jsonb_build_object('key',to_jsonb(ARRAY[{key}]::text[])::text,'version',{version},'values',({values}),'children',jsonb_build_object({})) AS doc, row_number() OVER (ORDER BY {order}) AS ord FROM {} {alias} WHERE {conditions} ORDER BY {order} LIMIT ({limit}) OFFSET ({offset})",children.join(","),node.table.sql()))
     }
 }

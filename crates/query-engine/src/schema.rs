@@ -18,6 +18,8 @@ pub struct Column {
     pub name: String,
     pub data_type: String,
     pub nullable: bool,
+    #[serde(default)]
+    pub generated: bool,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ForeignKey {
