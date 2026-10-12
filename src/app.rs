@@ -119,6 +119,10 @@ impl App {
         ] {
             input.register_handler(name, |_| false);
         }
+        let backend = url
+            .as_deref()
+            .map(query_engine::Backend::from_url)
+            .unwrap_or_default();
         let mut worker = url.map(Worker::new);
         if let Some(worker) = worker.as_mut() {
             worker.submit(None);
@@ -143,7 +147,7 @@ impl App {
             edits: vec![],
             applying: None,
             message: if busy {
-                "Connecting to PostgreSQL…".into()
+                format!("Connecting to {}…", backend.label())
             } else {
                 String::new()
             },

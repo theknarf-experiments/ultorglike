@@ -28,6 +28,7 @@ fn app() -> App {
     let orders = table("orders", &["id", "customer_id", "status"]);
     let items = table("line_items", &["id", "order_id", "product"]);
     app.catalog = Catalog {
+        backend: Default::default(),
         foreign_keys: vec![
             ForeignKey {
                 name: "orders_customer".into(),

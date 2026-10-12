@@ -93,8 +93,8 @@ pub enum Response {
     Data(Document),
 }
 struct Running {
-    cancelled: AtomicBool,
-    token: Mutex<Option<postgres::CancelToken>>,
+    cancelled: Arc<AtomicBool>,
+    token: Mutex<Option<Box<dyn Fn() + Send>>>,
 }
 pub struct Worker {
     url: String,
@@ -102,6 +102,7 @@ pub struct Worker {
     tx: mpsc::Sender<(u64, std::result::Result<Response, String>)>,
     rx: mpsc::Receiver<(u64, std::result::Result<Response, String>)>,
     running: Option<Arc<Running>>,
+    embedded_lock: Arc<Mutex<()>>,
 }
 impl Worker {
     pub fn new(url: String) -> Self {
@@ -112,6 +113,7 @@ impl Worker {
             tx,
             rx,
             running: None,
+            embedded_lock: Arc::new(Mutex::new(())),
         }
     }
     pub fn apply_changes(
@@ -121,7 +123,10 @@ impl Worker {
     ) -> mpsc::Receiver<std::result::Result<usize, String>> {
         let url = self.url.clone();
         let (tx, rx) = mpsc::channel();
+        let embedded_lock = self.embedded_lock.clone();
         std::thread::spawn(move || {
+            let _guard = (crate::Backend::from_url(&url) != crate::Backend::Postgres)
+                .then(|| embedded_lock.lock().unwrap());
             let result = crate::editing::apply(&url, &catalog, &changes).map_err(|e| {
                 if let crate::Error::Postgres(error) = &e {
                     if let Some(db) = error.as_db_error() {
@@ -139,12 +144,7 @@ impl Worker {
         if let Some(running) = self.running.take() {
             running.cancelled.store(true, Ordering::SeqCst);
             if let Some(token) = running.token.lock().unwrap().take() {
-                // Each request owns a distinct connection: cancellation cannot hit a newer query.
-                std::thread::spawn(move || {
-                    if let Ok(tls) = tls_connector() {
-                        let _ = token.cancel_query(tls);
-                    }
-                });
+                token();
             }
         }
     }
@@ -152,21 +152,51 @@ impl Worker {
         self.cancel();
         let generation = self.generation;
         let running = Arc::new(Running {
-            cancelled: AtomicBool::new(false),
+            cancelled: Arc::new(AtomicBool::new(false)),
             token: Mutex::new(None),
         });
         self.running = Some(running.clone());
         let tx = self.tx.clone();
         let url = self.url.clone();
+        let embedded_lock = self.embedded_lock.clone();
         std::thread::spawn(move || {
             let result = (|| -> Result<Response> {
+                if crate::Backend::from_url(&url) != crate::Backend::Postgres {
+                    let _guard = embedded_lock.lock().unwrap();
+                    if running.cancelled.load(Ordering::SeqCst) {
+                        return Err(crate::Error::Invalid("Cancelled".into()));
+                    }
+                    let connection = crate::embedded::Connection::open(&url, false)?;
+                    {
+                        let mut token = running.token.lock().unwrap();
+                        if running.cancelled.load(Ordering::SeqCst) {
+                            return Err(crate::Error::Invalid("Cancelled".into()));
+                        }
+                        *token = Some(connection.interrupt());
+                    }
+                    let _timeout = Timeout::new(connection.interrupt());
+                    return match query {
+                        Some((q, c)) => connection
+                            .execute_cancellable(&q, &c, &running.cancelled)
+                            .map(Response::Data),
+                        None => connection.discover().map(Response::Catalog),
+                    };
+                }
                 let mut client = connect(&url)?;
                 {
                     let mut token = running.token.lock().unwrap();
                     if running.cancelled.load(Ordering::SeqCst) {
                         return Err(crate::Error::Invalid("Cancelled".into()));
                     }
-                    *token = Some(client.cancel_token());
+                    let cancel = client.cancel_token();
+                    *token = Some(Box::new(move || {
+                        let cancel = cancel.clone();
+                        std::thread::spawn(move || {
+                            if let Ok(tls) = tls_connector() {
+                                let _ = cancel.cancel_query(tls);
+                            }
+                        });
+                    }));
                 }
                 if running.cancelled.load(Ordering::SeqCst) {
                     return Err(crate::Error::Invalid("Cancelled".into()));
@@ -208,5 +238,25 @@ impl Worker {
 impl Drop for Worker {
     fn drop(&mut self) {
         self.cancel();
+    }
+}
+
+// Dropping the guard wakes the watchdog immediately. Its interrupt handle is tied
+// to this request's connection, so a deadline can never cancel a later request.
+struct Timeout(mpsc::Sender<()>);
+impl Timeout {
+    fn new(interrupt: Box<dyn Fn() + Send>) -> Self {
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            if rx.recv_timeout(Duration::from_secs(10)) == Err(mpsc::RecvTimeoutError::Timeout) {
+                interrupt();
+            }
+        });
+        Self(tx)
+    }
+}
+impl Drop for Timeout {
+    fn drop(&mut self) {
+        let _ = self.0.send(());
     }
 }

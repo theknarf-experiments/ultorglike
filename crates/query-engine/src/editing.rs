@@ -19,6 +19,9 @@ pub struct Change {
 }
 
 pub fn apply(url: &str, catalog: &Catalog, changes: &[Change]) -> Result<usize> {
+    if crate::Backend::from_url(url) != crate::Backend::Postgres {
+        return crate::embedded::apply(url, catalog, changes);
+    }
     if changes.is_empty() || changes.len() > 100 {
         return Err(Error::Invalid("Stage between 1 and 100 row changes".into()));
     }

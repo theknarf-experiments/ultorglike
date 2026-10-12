@@ -2,7 +2,8 @@
 
 A Rust terminal database workbench inspired by Ultorg and Sieuferd. Explore related
 records in one nested grid, navigate with Vim motions, and build queries by selecting
-fields and relationships. PostgreSQL performs joins, filtering, and sorting.
+fields and relationships. Supports **PostgreSQL, SQLite, and DuckDB**, with joins,
+filtering, sorting, and formulas evaluated by the selected database.
 
 ## Run the seeded workflow
 
@@ -86,7 +87,9 @@ attached immediate child relationship. `count([child])` counts rows;
 levels, as in the customer total above. References use the relationship labels
 shown in the view; field names with spaces work inside brackets.
 
-Calculations use PostgreSQL `numeric` arithmetic and preserve decimal precision.
+PostgreSQL formulas use exact `numeric` arithmetic. SQLite formulas use floating-point
+arithmetic. DuckDB uses its native numeric types (including DECIMAL); division
+returns floating point. Results are converted to text for display.
 Null inputs propagate through arithmetic; division by zero returns `NULL`.
 Sums ignore null values and return zero for empty/all-null collections; counts
 return zero for empty collections. Aggregates include **all matching child rows**,
@@ -102,6 +105,50 @@ Definitions are saved with the query; existing views without formulas still load
 ## Connect to another database
 
 ```sh
+cargo run -- --sqlite /path/to/database.sqlite
+cargo run -- --duckdb /path/to/database.duckdb
+cargo run -- --database-url postgresql://user:password@localhost/database
+```
+
+`DATABASE_URL` also accepts `sqlite:PATH` or `duckdb:PATH`. Embedded paths are
+literal file paths (relative or absolute), not percent-encoded URLs; quote paths
+with spaces. Files must already exist. Browsing opens them read-only. Add
+`--editable` to enable the same staged insert/update/delete workflow on all three
+backends. SQLite and DuckDB are bundled; no database server or CLI is needed.
+Building requires a C/C++ toolchain, and the first DuckDB build can take several minutes.
+
+Create small, disposable embedded fixtures, including composite foreign keys:
+
+```sh
+cargo run -p query-engine --example seed -- sqlite /tmp/ultorg-demo.sqlite
+cargo run -- --sqlite /tmp/ultorg-demo.sqlite
+cargo run -p query-engine --example seed -- duckdb /tmp/ultorg-demo.duckdb
+cargo run -- --duckdb /tmp/ultorg-demo.duckdb
+```
+
+All backends support tables/views, bidirectional foreign-key navigation, nested
+paging, filters, sorting, formulas, exports, and saved workspaces. SQLite discovers
+`main`; DuckDB discovers schemas in the opened database. Attached databases,
+in-memory databases, and DuckDB views requiring external file access/extensions
+are not supported. DuckDB follows its normal file-locking rules; close other
+processes writing to the file before browsing it.
+
+Embedded collections run as separate parameterized queries within one consistent
+read snapshot. The SQL inspector shows the root query and child query templates.
+Embedded edits compare the complete loaded row inside the write transaction;
+a changed or missing row rolls back the batch. This detects value changes, but
+unlike PostgreSQL row versions cannot detect a row changed and restored to exactly
+the same values. SQLite enforces declared foreign keys for every write. BLOB
+columns display hexadecimal text and accept even-length hex when editing.
+DuckDB rejects edits to generated columns when applying the batch.
+
+Saved views use schema/table names and validate against the connected database;
+the existing `examples/*.json` target the PostgreSQL fixture's `public` schema.
+Build a view with `t` and `f` for the embedded fixture's `main` schema.
+
+PostgreSQL connection configuration:
+
+```sh
 DATABASE_URL=postgresql://user:password@localhost/database cargo run
 # Alternatively: cargo run -- --database-url postgresql://user:password@localhost/database
 ```
@@ -109,7 +156,7 @@ DATABASE_URL=postgresql://user:password@localhost/database cargo run
 The PostgreSQL backend supports certificate-verified TLS. It discovers
 schemas, tables, primary keys, and foreign keys (including composite keys), and
 allows traversing foreign keys in either direction. Connections use read-only
-transactions by default. Database writes are available only with `--editable`; numeric formulas and aggregates execute in PostgreSQL.
+transactions by default. Database writes are available only with `--editable`; numeric formulas and aggregates execute in the database.
 Use `sslmode=require` in the connection URL to require encryption. TLS verifies the
 server certificate and hostname using the system trust store; set `PGSSLROOTCERT`
 to a PEM CA certificate for a private server. The default PostgreSQL `prefer` mode
@@ -155,7 +202,7 @@ Commands accept relation paths (`customers.orders` or `orders`) and field paths
 (`orders.freight`). `:help` lists them. Available comparisons are `=`, `!=`, `>`,
 `>=`, `<`, `<=`, `contains`, `null`, and `notnull`. Values containing spaces are
 entered literally after the operator. `contains` is case-insensitive and treats
-wildcard characters literally. PostgreSQL validates values against column types.
+wildcard characters literally. The selected database applies its type rules.
 `:sort`/`:sort_desc` make the field the primary sort term, retaining previous terms
 as tie-breakers; `:unsort field` removes a term.
 
@@ -177,7 +224,7 @@ as tie-breakers; `:unsort field` removes a term.
   parent's child collections page independently, with stable key ordering.
 - Folded collections load when expanded; formulas still aggregate their full matching
   rows. Query edits reset collection windows. Reusable saved views open at page one.
-  Search applies to loaded values; filters and sorts run in PostgreSQL before paging.
+  Search applies to loaded values; filters and sorts run in the database before paging.
   Concurrent database changes may shift offset-based page boundaries.
 - The grid renders recursive grouped headers, spanning parent cells, empty child
   placeholders, persistent horizontal/vertical scrolling, and Unicode values.
@@ -232,12 +279,13 @@ and appear in the grid after applying, if they match the current query/window.
 `:discard N` abandons staged changes. Up to 100 row changes can be staged; multiple
 field updates on the same record are combined. A type, constraint, permission or
 stale-row conflict rolls back the entire batch. Changed/deleted rows are detected
-using the primary key and PostgreSQL row version loaded by the browser. Discard
+using the primary key and loaded row version (PostgreSQL) or full-row snapshot
+(SQLite/DuckDB). Discard
 and refresh a conflicting row before restaging. Connection errors during commit
 can leave the outcome uncertain; inspect the database before retrying.
 
 Editing requires a primary key. Formula columns, generated columns, and primary-key
-updates are read-only. PostgreSQL permissions and foreign-key rules still apply,
+updates are read-only. Database permissions and foreign-key rules still apply,
 including delete cascades. Reads stay read-only, even in editable mode. Query undo
 (`u`) does not undo applied database writes. Pending writes are not saved in views
 or workspaces; apply/discard them before exporting, saving/loading a workspace or
@@ -276,11 +324,13 @@ customer inserted, updated and deleted through the app):
 python3 -m venv .venv
 .venv/bin/pip install -r dev/requirements-test.txt
 cargo build --locked
+cargo build -p query-engine --example seed --locked
 .venv/bin/python scripts/smoke.py
+.venv/bin/python scripts/smoke-embedded.py
 ```
- The database
-integration test is explicitly ignored by ordinary `cargo test`, so unit tests work
-without Docker. It can also run against an existing seeded fixture:
+SQLite and DuckDB integration tests create temporary database files and run with
+ordinary `cargo test`; they require no Docker. PostgreSQL integration tests are
+explicitly ignored by default and can run against an existing seeded fixture:
 
 ```sh
 TEST_DATABASE_URL=postgresql://ultorg:ultorg@localhost:55432/ultorg \
@@ -293,7 +343,7 @@ TEST_DATABASE_URL=postgresql://ultorg:ultorg@localhost:55432/ultorg \
 | `src/ui.rs` | Ratatui rendering and terminal clipping |
 | `crates/data-model/src/document.rs` | Recursive result document and layout |
 | `crates/data-model/src/from_arrow.rs` | Retained Arrow conversion adapter |
-| `crates/query-engine` | PostgreSQL catalog, query model, compiler, worker |
+| `crates/query-engine` | PostgreSQL/SQLite/DuckDB catalogs, query compilation, execution, and writes |
 | `crates/tui-input` | Reusable key sequence and command input handling |
 | `crates/tui-widgets` | Reusable terminal widgets |
 

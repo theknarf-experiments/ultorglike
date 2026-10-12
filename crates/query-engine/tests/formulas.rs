@@ -25,6 +25,7 @@ fn fixture() -> (Query, Catalog) {
     (
         Query::new(&table),
         Catalog {
+            backend: Default::default(),
             tables: vec![table],
             foreign_keys: vec![],
         },

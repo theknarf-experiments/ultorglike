@@ -20,7 +20,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .query
         .as_ref()
         .map(|q| q.root.table.qualified())
-        .unwrap_or_else(|| "PostgreSQL".into());
+        .unwrap_or_else(|| app.catalog.backend.label().into());
     line(
         frame,
         Rect::new(0, 0, area.width, 1),

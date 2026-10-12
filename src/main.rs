@@ -23,15 +23,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut view = None;
     let mut session = None;
     let mut editable = false;
+    let mut explicit_database = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--editable" => editable = true,
-            "--database-url" => url = args.next().ok_or("--database-url requires a value")?,
+            "--database-url" | "--sqlite" | "--duckdb" => {
+                if explicit_database {
+                    return Err("Choose only one database option".into());
+                }
+                explicit_database = true;
+                let value = args
+                    .next()
+                    .ok_or_else(|| format!("{arg} requires a value"))?;
+                url = match arg.as_str() {
+                    "--sqlite" => format!("sqlite:{value}"),
+                    "--duckdb" => format!("duckdb:{value}"),
+                    _ => value,
+                };
+            }
             "--session" => session = Some(args.next().ok_or("--session requires a path")?),
             "--view" => view = Some(args.next().ok_or("--view requires a path")?),
             "--help" | "-h" => {
-                println!("ultorglike [--database-url URL] [--view FILE | --session FILE] [--editable]\nUses DATABASE_URL or local Compose PostgreSQL on port 55432.\nStart test data: docker compose up -d --wait\nInside the app: ? help, t tables, f fields, : commands.");
+                println!("ultorglike [--database-url URL | --sqlite FILE | --duckdb FILE] [--view FILE | --session FILE] [--editable]\nSupports PostgreSQL, SQLite and DuckDB.\nUses DATABASE_URL (postgresql://…, sqlite:PATH, duckdb:PATH) or local Compose PostgreSQL on port 55432.\nStart test data: docker compose up -d --wait\nInside the app: ? help, t tables, f fields, : commands.");
                 return Ok(());
             }
             _ => return Err(format!("Unknown argument: {arg}").into()),

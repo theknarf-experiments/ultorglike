@@ -303,20 +303,11 @@ impl App {
                 self.open_panel("Query", text);
             }
             "sql" => {
-                let compiled = query_engine::query::compile(
+                let text = query_engine::query::explain(
                     self.query.as_ref().ok_or("Open a table first")?,
                     &self.catalog,
                 )
                 .map_err(|e| e.to_string())?;
-                let mut text = compiled
-                    .sql
-                    .replace(" FROM ", "\nFROM ")
-                    .replace(" WHERE ", "\nWHERE ")
-                    .replace(" ORDER BY ", "\nORDER BY ");
-                text.push_str("\n\nParameters (bound separately):\n");
-                for (i, value) in compiled.params.iter().enumerate() {
-                    text.push_str(&format!("${} = {:?}\n", i + 1, value));
-                }
                 self.open_panel("Generated SQL", text);
             }
             "schema" => {

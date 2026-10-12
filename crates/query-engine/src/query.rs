@@ -377,6 +377,9 @@ pub struct Compiled {
 }
 pub fn compile(query: &Query, catalog: &Catalog) -> Result<Compiled> {
     query.validate(catalog)?;
+    if catalog.backend != crate::Backend::Postgres {
+        return flat_compile(query, catalog, &query.root, &[], &[]);
+    }
     let mut compiler = Compiler::new(catalog, query.limit);
     let sql = compiler.select(&query.root, &[], &query.pages)?;
     Ok(Compiled {
@@ -433,25 +436,20 @@ impl<'a> Compiler<'a> {
                     node.label
                 ))
             })?;
-        if numeric
-            && !matches!(
-                column.data_type.as_str(),
-                "smallint" | "integer" | "bigint" | "real" | "double precision" | "numeric"
-            )
-            && !column.data_type.starts_with("numeric(")
-        {
+        if numeric && !self.catalog.backend.is_numeric(&column.data_type) {
             return Err(Error::Invalid(format!(
                 "{}.{} is {}, expected a numeric field",
                 node.label, name, column.data_type
             )));
         }
-        Ok(format!(
-            "t{}.{}{}",
-            node.id,
-            quote(name),
-            if numeric { "::numeric" } else { "" }
-        ))
+        let field = format!("t{}.{}", node.id, quote(name));
+        Ok(if numeric {
+            self.catalog.backend.numeric(&field)
+        } else {
+            field
+        })
     }
+
     fn expression(&mut self, node: &Node, expr: &Expr) -> Result<String> {
         self.expansions += 1;
         if self.expansions > 10_000 {
@@ -460,7 +458,7 @@ impl<'a> Compiler<'a> {
             ));
         }
         match expr {
-            Expr::Number(value) => Ok(format!("({value})::numeric")),
+            Expr::Number(value) => Ok(self.catalog.backend.numeric(value)),
             Expr::Field(name) => self.field(node, name, true),
             Expr::Negate(inner) => Ok(format!("(-({}))", self.expression(node, inner)?)),
             Expr::Binary(op, lhs, rhs) => {
@@ -503,11 +501,11 @@ impl<'a> Compiler<'a> {
                 } else {
                     format!("COALESCE(SUM({value}), 0)")
                 };
-                Ok(format!(
-                    "(SELECT {aggregate} FROM {} t{} WHERE {conditions})::numeric",
+                Ok(self.catalog.backend.numeric(&format!(
+                    "(SELECT {aggregate} FROM {} t{} WHERE {conditions})",
                     child.table.sql(),
                     child.id
-                ))
+                )))
             }
         }
     }
@@ -536,9 +534,16 @@ impl<'a> Compiler<'a> {
                 continue;
             }
             self.params.push(filter.value.clone());
-            let param = format!("${}::text", self.params.len());
+            let param = self.catalog.backend.parameter(self.params.len());
             if filter.op == Operator::Contains {
-                terms.push(format!("strpos(lower({col}::text), lower({param})) > 0"));
+                let function = if self.catalog.backend == crate::Backend::SQLite {
+                    "instr"
+                } else {
+                    "strpos"
+                };
+                terms.push(format!(
+                    "{function}(lower(CAST({col} AS TEXT)), lower({param})) > 0"
+                ));
                 continue;
             }
             let dt = table
@@ -556,7 +561,15 @@ impl<'a> Compiler<'a> {
                 Operator::Le => "<=",
                 _ => unreachable!(),
             };
-            terms.push(format!("{col} {op} ({param})::{dt}"));
+            let is_formula = node.formulas.iter().any(|f| f.name == filter.column);
+            let value = if is_formula && self.catalog.backend == crate::Backend::SQLite {
+                format!("CAST({param} AS REAL)")
+            } else if is_formula && self.catalog.backend == crate::Backend::DuckDB {
+                format!("cast_to_type({param}, {col})")
+            } else {
+                self.catalog.backend.cast(&param, dt)
+            };
+            terms.push(format!("{col} {op} {value}"));
         }
         for child in &node.children {
             if child.require_match {
@@ -689,4 +702,141 @@ impl<'a> Compiler<'a> {
         };
         Ok(format!("SELECT jsonb_build_object('key',to_jsonb(ARRAY[{key}]::text[])::text,'version',{version},'values',({values}),'children',jsonb_build_object({})) AS doc, row_number() OVER (ORDER BY {order}) AS ord FROM {} {alias} WHERE {conditions} ORDER BY {order} LIMIT ({limit}) OFFSET ({offset})",children.join(","),node.table.sql()))
     }
+}
+
+/// Compile one collection for embedded engines. The executor binds its parent's
+/// join values, then assembles independent child collections in the same snapshot.
+pub(crate) fn flat_compile(
+    query: &Query,
+    catalog: &Catalog,
+    node: &Node,
+    parents: &[String],
+    joins: &[(Option<String>, String)],
+) -> Result<Compiled> {
+    let mut compiler = Compiler::new(catalog, query.limit);
+    let table = catalog.table(&node.table).unwrap();
+    let mut fields =
+        crate::embedded::snapshot_fields(table, catalog.backend, &format!("t{}.", node.id));
+    for name in &node.columns {
+        let field = compiler.field(node, name, false)?;
+        let dt = table
+            .columns
+            .iter()
+            .find(|c| &c.name == name)
+            .map(|c| c.data_type.as_str())
+            .unwrap_or("numeric");
+        fields.push(catalog.backend.text(&field, dt));
+    }
+    let mut conditions = compiler.conditions(node, None)?;
+    if let Some(join) = &node.join {
+        for (name, (value, storage)) in join.child_columns.iter().zip(joins) {
+            if let Some(value) = value {
+                compiler.params.push(value.clone());
+                let dt = &table
+                    .columns
+                    .iter()
+                    .find(|c| &c.name == name)
+                    .unwrap()
+                    .data_type;
+                let parameter = catalog.backend.parameter(compiler.params.len());
+                let bound = if catalog.backend == crate::Backend::SQLite {
+                    match storage.as_str() {
+                        "integer" => format!("CAST({parameter} AS INTEGER)"),
+                        "real" => format!("CAST({parameter} AS REAL)"),
+                        "blob" => format!("unhex({parameter})"),
+                        _ => parameter,
+                    }
+                } else {
+                    catalog.backend.cast(&parameter, dt)
+                };
+                conditions.push_str(&format!(" AND t{}.{} = {bound}", node.id, quote(name)));
+            } else {
+                conditions.push_str(" AND FALSE");
+            }
+        }
+    }
+    let mut order = vec![];
+    for sort in &node.sort {
+        order.push(format!(
+            "{} {} NULLS LAST",
+            compiler.field(node, &sort.column, false)?,
+            if sort.descending { "DESC" } else { "ASC" }
+        ));
+    }
+    let keys: Vec<_> = if table.primary_keys.is_empty() {
+        table.columns.iter().map(|c| &c.name).collect()
+    } else {
+        table.primary_keys.iter().collect()
+    };
+    for key in keys {
+        if !node.sort.iter().any(|s| &s.column == key) {
+            order.push(format!("t{}.{} ASC NULLS LAST", node.id, quote(key)));
+        }
+    }
+    let (offset, limit) = query.window(node.id, parents);
+    let sql = format!(
+        "SELECT {} FROM {} t{} WHERE {conditions} ORDER BY {} LIMIT {} OFFSET {offset}",
+        fields.join(","),
+        node.table.sql(),
+        node.id,
+        order.join(","),
+        limit + 1
+    );
+    Ok(Compiled {
+        sql,
+        params: compiler.params,
+    })
+}
+
+/// SQL inspector output. Embedded child collections are templates: their parent
+/// values and per-instance page windows are supplied when executing the view.
+pub fn explain(query: &Query, catalog: &Catalog) -> Result<String> {
+    fn section(compiled: Compiled, backend: crate::Backend) -> String {
+        let mut text = compiled
+            .sql
+            .replace(" FROM ", "\nFROM ")
+            .replace(" WHERE ", "\nWHERE ")
+            .replace(" ORDER BY ", "\nORDER BY ");
+        text.push_str("\n\nParameters (bound separately):\n");
+        for (i, value) in compiled.params.iter().enumerate() {
+            let prefix = if backend == crate::Backend::SQLite {
+                "?"
+            } else {
+                "$"
+            };
+            text.push_str(&format!("{prefix}{} = {value:?}\n", i + 1));
+        }
+        text
+    }
+    fn children(query: &Query, catalog: &Catalog, node: &Node, text: &mut String) -> Result<()> {
+        for child in node.children.iter().filter(|c| c.expanded) {
+            let joins = child
+                .join
+                .as_ref()
+                .unwrap()
+                .parent_columns
+                .iter()
+                .map(|c| (Some(format!("<parent.{c}>")), String::new()))
+                .collect::<Vec<_>>();
+            text.push_str(&format!(
+                "\n\nChild collection: {} (template; independent bindings and page window)\n",
+                child.label
+            ));
+            text.push_str(&section(
+                flat_compile(query, catalog, child, &[], &joins)?,
+                catalog.backend,
+            ));
+            children(query, catalog, child, text)?;
+        }
+        Ok(())
+    }
+    let mut text = section(compile(query, catalog)?, catalog.backend);
+    if catalog.backend != crate::Backend::Postgres {
+        text.insert_str(
+            0,
+            "Root collection (children execute separately in the same snapshot):\n",
+        );
+        children(query, catalog, &query.root, &mut text)?;
+    }
+    Ok(text)
 }
