@@ -287,9 +287,6 @@ TEST_DATABASE_URL=postgresql://ultorg:ultorg@localhost:55432/ultorg \
   cargo test -p query-engine --test postgres -- --ignored --test-threads=1
 ```
 
-[Implementation workflow](docs/implementation-workflow.md) records the milestones;
-[release roadmap](docs/roadmap.md) records the completed first-release scope and validation.
-
 | Component | Responsibility |
 | --- | --- |
 | `src/app.rs`, `src/app/` | Modal interactions, query editing, workspaces, exports, staged writes |
